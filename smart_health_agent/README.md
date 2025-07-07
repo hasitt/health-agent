@@ -123,6 +123,69 @@ The document processor (`document_processor.py`) handles health-related PDF docu
    - Extracts and analyzes embedded images
    - Detects charts/graphs and provides detailed descriptions
 
+## Garmin Integration (New Feature)
+
+This project now supports integration with Garmin Connect to pull health and activity data using the unofficial `garminconnect` Python package. This allows the Smart Health Agent to incorporate a broader range of user-specific metrics for personalized recommendations.
+
+### How it Works
+
+A dedicated module (e.g., `garmin_utils.py` or integrated within `health_metrics_agent.py`) will handle:
+1.  **Authentication:** Securely logging into Garmin Connect.
+2.  **Data Retrieval:** Fetching various metrics such as:
+    * Activity data (steps, distance, calories)
+    * Heart rate
+    * Sleep data
+    * Body composition (if available)
+    * Stress levels
+    * VO2 Max
+3.  **Data Processing:** Transforming raw Garmin data into a format usable by the `Health Metrics Agent`.
+
+### Setup for Garmin Integration
+
+To enable Garmin integration, you will need to:
+
+1.  **Install the required packages:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Secure Credential Setup (Recommended):**
+    
+    **Option A: Interactive Setup Script (Easiest)**
+    ```bash
+    python setup_garmin.py
+    ```
+    This will guide you through creating a secure `.env` file with your credentials.
+    
+    **Option B: Manual Setup**
+    - Copy the template file: `cp .env.example .env`
+    - Edit `.env` and add your credentials:
+    ```
+    GARMIN_USERNAME=your_garmin_email@example.com
+    GARMIN_PASSWORD=your_garmin_password
+    ```
+    
+    **Option C: Environment Variables**
+    ```bash
+    export GARMIN_USERNAME="your_garmin_email@example.com"
+    export GARMIN_PASSWORD="your_garmin_password"
+    ```
+
+3.  **Test the Connection:**
+    ```bash
+    python setup_garmin.py
+    # Choose option 2 to test the connection
+    ```
+
+4.  **Security Notes:**
+    - The `.env` file is automatically ignored by git
+    - Never commit credentials to version control
+    - Use strong, unique passwords for your Garmin account
+    - Consider enabling 2FA on your Garmin account for additional security
+
+5.  **Integration into Code:**
+    The `garmin_utils.py` module is ready to use and will automatically load credentials from the `.env` file or environment variables.
+
 ## Google Fitness API Setup
 
 ### Important Notice: API Deprecation

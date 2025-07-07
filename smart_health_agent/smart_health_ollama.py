@@ -1,48 +1,87 @@
+"""
+Smart Health Agent - Streamlined MVP
+Core Garmin data integration with simplified morning reports.
+"""
+
 import os
 import json
 import requests
 import gradio as gr
-import pandas as pd
 from typing import List, Dict, Any
 from pydantic import BaseModel, Field
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
+from pathlib import Path
+import logging
+from datetime import datetime, timedelta
 
-# Define Ollama configuration - change this value to match your Ollama host on Google Cloud Run
-OLLAMA_HOST = ""
+# Import configuration and logging
+from config import Config, get_logger
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END, START
 
 # Core LLM / embedding imports
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
-
-# Use OllamaLLM for simpler streaming
 from langchain_ollama import OllamaLLM
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Milvus
+from langchain.prompts import PromptTemplate
+from langchain_core.pydantic_v1 import BaseModel, Field
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.chat_models import ChatOllama
 
-# Optional Google Fitness imports (if user selects Google Fit)
-from google_fit_utils import get_google_fitness_data
+# Garmin Connect integration
+try:
+    from garmin_utils import get_garmin_health_data, GarminConnectError, GarminHealthData
+    GARMIN_AVAILABLE = True
+except ImportError:
+    GARMIN_AVAILABLE = False
+    get_logger('health_agent').warning("Garmin integration not available")
 
 # RAG / Milvus imports
-from langchain_milvus import Milvus
-
-# Import document processor helper module
 import document_processor as dp
+
+# Initialize components
+logger = get_logger('health_agent')
+chat_logger = get_logger('chat')
+rag_logger = get_logger('rag_setup')
+ui_logger = get_logger('ui')
 
 # Global LLM instance
 llm = OllamaLLM(
-    model='gemma3:4b-it-q4_K_M',
-    temperature=0.2,
-    streaming=True,
-    base_url=OLLAMA_HOST
+    model=Config.OLLAMA_MODEL,
+    temperature=Config.OLLAMA_TEMPERATURE,
+    base_url=Config.OLLAMA_HOST
 )
 
-def WeatherAgent(latitude: float, longitude: float) -> dict:
-    """
-    Agent: Retrieves and analyzes weather conditions to inform health recommendations.
-    Provides insights on optimal exercise settings based on current weather.
-    """
+# Global vectorstore (initialized once)
+global_vectorstore = None
+
+###############################################################################
+# AGENT STATE
+###############################################################################
+
+class HealthAgentState(BaseModel):
+    """State object for the health agent workflow."""
+    messages: List[BaseMessage] = Field(default_factory=list)
+    health_data: Dict[str, Any] = Field(default_factory=dict)
+    weather_data: Dict[str, Any] = Field(default_factory=dict)
+    recommendations: List[BaseMessage] = Field(default_factory=list)
+    rag_context: Dict[str, Any] = Field(default_factory=dict)
+    streaming_response: str = Field(default="")
+    morning_report: str = Field(default="")
+    
+    class Config:
+        extra = "allow"
+        arbitrary_types_allowed = True
+
+###############################################################################
+# WEATHER AGENT
+###############################################################################
+
+def get_weather_data(latitude: float, longitude: float) -> dict:
+    """Retrieve weather conditions for health recommendations."""
     base_url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": latitude,
@@ -51,7 +90,7 @@ def WeatherAgent(latitude: float, longitude: float) -> dict:
         "timezone": "America/Los_Angeles"
     }
     
-    # Default values in case API fails
+    # Default values
     weather_data = {"temperature": 20, "humidity": 50, "condition": "Unknown"}
     
     try:
@@ -71,543 +110,474 @@ def WeatherAgent(latitude: float, longitude: float) -> dict:
                 "condition": weather_descriptions.get(current.get("weather_code", 0), "Unknown")
             }
     except Exception as e:
-        print(f"[WEATHER_AGENT] Error retrieving weather data: {e}")
-    
-    def get_fallback_recommendations():
-        temp = weather_data.get('temperature', 20)
-        condition = weather_data.get('condition', 'Unknown')
-        return {
-            'exercise_recommendation': 'Indoor' if (temp > 30 or temp < 5) else 'Outdoor',
-            'intensity_level': 'Moderate' if 15 <= temp <= 25 else 'Low',
-            'weather_alert': condition.lower() in ['rain', 'drizzle', 'snow', 'storm', 'foggy'],
-            'reasoning': f"Based on {temp}°C and {condition} conditions, recommend {'indoor' if (temp > 30 or temp < 5) else 'outdoor'} exercise at {'moderate' if 15 <= temp <= 25 else 'low'} intensity."
-        }
-    
-    try:
-        prompt = f"""Analyze weather conditions (Temperature: {weather_data['temperature']}°C, Condition: {weather_data['condition']}, Humidity: {weather_data['humidity']}%) and provide exercise recommendations in JSON format with these exact keys:
-            - exercise_recommendation: "Indoor" or "Outdoor"
-            - intensity_level: "Low", "Moderate", or "High"
-            - weather_alert: true or false
-            - reasoning: brief explanation
-            Return only JSON."""
-        
-        response = llm.invoke(prompt)
-        llm_recommendations = json.loads(response)
-        
-        # Verify all required fields exist
-        required_fields = ['exercise_recommendation', 'intensity_level', 'weather_alert', 'reasoning']
-        if all(field in llm_recommendations for field in required_fields):
-            weather_data.update(llm_recommendations)
-        else:
-            weather_data.update(get_fallback_recommendations())
-            
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"[WEATHER_AGENT] LLM recommendation failed: {e}")
-        weather_data.update(get_fallback_recommendations())
+        logger.error(f"Error retrieving weather data: {e}")
     
     return weather_data
 
 ###############################################################################
-# SHARED STATE & AGENTS
+# HEALTH METRICS AGENT (Simplified)
 ###############################################################################
 
-class HealthAgentState(BaseModel):
-    """
-    State object for the health agent workflow
-    """
-    messages: List[BaseMessage] = Field(default_factory=list)
-    health_data: Dict[str, Any] = Field(default_factory=dict)
-    weather_data: Dict[str, Any] = Field(default_factory=dict)
-    recommendations: List[BaseMessage] = Field(default_factory=list)
-    rag_context: Dict[str, Any] = Field(default_factory=dict)
-    streaming_response: str = Field(default="")
-    # Simple agent reasoning storage
-    agent_reasoning: Dict[str, str] = Field(default_factory=dict)
+def analyze_health_metrics(state: HealthAgentState) -> HealthAgentState:
+    """Analyze fitness data and evaluate vitals."""
+    logger.info("Processing health data")
+    
+    # Extract core metrics
+    hr = state.health_data.get('heart_rate', 0)
+    sleep_hrs = state.health_data.get('sleep_hours', 0)
+    steps = state.health_data.get('steps', 0)
+    
+    logger.info(f"Metrics - HR: {hr}, Sleep: {sleep_hrs}h, Steps: {steps}")
 
-def HealthMetricsAgent(state: HealthAgentState) -> HealthAgentState:
-    """
-    Agent: Analyzes fitness data and evaluates vitals/status.
-    """
-    print("\n[HEALTH_AGENT] Processing health data...")
-    vitals_status = {}
+    # Evaluate vitals
+    vitals_status = {
+        'heart_rate': 'Normal' if 60 <= hr <= 100 else 'Abnormal',
+        'sleep': 'Optimal' if 7 <= sleep_hrs <= 9 else 'Suboptimal',
+        'activity': 'Active' if steps >= 10000 else 'Sedentary'
+    }
     
-    # Check if we have 7-day averages or single values
-    if 'heart_rate_avg_7d' in state.health_data:
-        hr = state.health_data.get('heart_rate_avg_7d', 0)
-        sleep_hrs = state.health_data.get('sleep_hours_avg_7d', 0)
-        steps = state.health_data.get('steps_avg_7d', 0)
-        # Store both 7d average and regular format for compatibility
-        state.health_data['heart_rate'] = hr
-        state.health_data['sleep_hours'] = sleep_hrs
-        state.health_data['steps'] = steps
-    else:
-        hr = state.health_data.get('heart_rate', 0)
-        sleep_hrs = state.health_data.get('sleep_hours', 0)
-        steps = state.health_data.get('steps', 0)
+    # Update state
+    state.health_data.update({
+        'vitals_status': vitals_status,
+        'last_processed': datetime.now()
+    })
     
-    print(f"[HEALTH_AGENT] Current metrics - HR: {hr}, Sleep: {sleep_hrs}, Steps: {steps}")
-
-    vitals_status['heart_rate'] = 'Normal' if 60 <= hr <= 100 else 'Abnormal'
-    vitals_status['sleep'] = 'Optimal' if 7 <= sleep_hrs <= 9 else 'Suboptimal'
-    vitals_status['activity'] = 'Active' if steps >= 10000 else 'Sedentary'
-    
-    if not state.weather_data or 'exercise_recommendation' not in state.weather_data:
-        state.weather_data = WeatherAgent(36.1699, -115.1398)  # Las Vegas coordinates
-    
-    state.health_data['vitals_status'] = vitals_status
-    state.health_data['weather_impact'] = state.weather_data
-    state.health_data['last_processed'] = pd.Timestamp.now()
-    
-    # Simple reasoning
-    state.agent_reasoning["HealthMetrics"] = f"Analyzed vitals: HR {vitals_status['heart_rate']}, Sleep {vitals_status['sleep']}, Activity {vitals_status['activity']}"
-    
-    print(f"[HEALTH_AGENT] Processed vitals status: {vitals_status}")
+    logger.info(f"Processed vitals status: {vitals_status}")
     return state
 
-def MedicalKnowledgeAgent(state: HealthAgentState) -> HealthAgentState:
-    """
-    Agent: Searches medical documents for relevant health insights using the globally initialized vectorstore.
-    """
-    print(f"\n[KNOWLEDGE_AGENT] Processing medical knowledge...")
-    global global_vectorstore
+###############################################################################
+# MEDICAL KNOWLEDGE AGENT (Simplified)
+###############################################################################
 
-    relevant_docs = []
-    num_docs = 0
+def search_medical_knowledge(state: HealthAgentState) -> HealthAgentState:
+    """Search medical documents for relevant health insights."""
+    logger.info("Searching medical knowledge")
+    global global_vectorstore
     
-    # Check if the global vectorstore is initialized
-    if global_vectorstore:
-        query = f"Health insights for: Heart rate: {state.health_data.get('heart_rate')}, Sleep: {state.health_data.get('sleep_hours')} hours, Steps: {state.health_data.get('steps')}"
+    # Extract the last user message for the query
+    user_query = ""
+    for msg in reversed(state.messages):
+        if isinstance(msg, HumanMessage):
+            user_query = str(msg.content)  # Ensure it's a string
+            break
+    
+    if not user_query:
+        logger.info("No user query found for RAG search.")
+        return state
+    
+    # Search knowledge base if available
+    if global_vectorstore is not None:
         try:
-            relevant_docs = global_vectorstore.similarity_search(query, k=3)
-            num_docs = len(relevant_docs)
+            docs = global_vectorstore.similarity_search(user_query, k=2)
+            rag_context = "\n".join([doc.page_content for doc in docs])
+            state.rag_context = {"search_results": rag_context}
+            logger.info("RAG search completed successfully.")
         except Exception as e:
-            print(f"[KNOWLEDGE_AGENT] Error during similarity search: {e}")
-            relevant_docs = []
+            logger.error(f"Error during RAG search: {e}")
+            state.rag_context = {"error": f"RAG search failed: {e}"}
     else:
-        print("[KNOWLEDGE_AGENT] Warning: Global vectorstore not initialized. Skipping document search.")
-
-    state.rag_context["retrieved_knowledge"] = "\n".join([doc.page_content for doc in relevant_docs])
-    state.rag_context["current_metrics"] = state.health_data
+        logger.info("No vector store available - skipping RAG search for MVP")
+        state.rag_context = {"info": "Medical knowledge search not available in MVP mode"}
     
-    state.agent_reasoning["MedicalKnowledge"] = f"Retrieved {num_docs} medical documents" if global_vectorstore else "Skipped document retrieval (vectorstore not initialized)"
-    
-    print("[KNOWLEDGE_AGENT] Updated state with retrieved knowledge")
     return state
 
-def RecommendationAgent(state: HealthAgentState) -> HealthAgentState:
-    """
-    Agent: Generates personalized health recommendations based on all collected data.
-    """
-    print("\n[RECOMMENDATION_AGENT] Generating personalized health plan...")
-    weather_data = state.weather_data
+###############################################################################
+# RECOMMENDATION AGENT (Simplified)
+###############################################################################
+
+def generate_recommendations(state: HealthAgentState) -> HealthAgentState:
+    """Generate simple recommendations based on health data."""
+    logger.info("Generating general recommendations")
     
-    context = f"""
-    Medical Knowledge: {state.rag_context.get('retrieved_knowledge', 'No medical context available')}
+    context = build_recommendation_context(state)
+    prompt = create_recommendation_prompt(context)
     
-    Current Health Metrics:
-    - Heart Rate: {state.health_data.get('heart_rate')} bpm - Status: {state.health_data.get('vitals_status', {}).get('heart_rate', 'Unknown')}
-    - Sleep: {state.health_data.get('sleep_hours')} hours - Status: {state.health_data.get('vitals_status', {}).get('sleep', 'Unknown')}
-    - Steps: {state.health_data.get('steps')} - Status: {state.health_data.get('vitals_status', {}).get('activity', 'Unknown')}
+    recommendation_text = ""
+    try:
+        for chunk in llm.stream(prompt):
+            recommendation_text += chunk
+    except Exception as e:
+        logger.error(f"Error generating recommendations: {e}")
+        recommendation_text = "I'm sorry, I couldn't generate detailed recommendations at this moment."
     
-    Weather Analysis:
-    - Current Weather: {weather_data.get('condition')} at {weather_data.get('temperature')}°C
-    - Recommended Location: {weather_data.get('exercise_recommendation')}
-    - Suggested Intensity: {weather_data.get('intensity_level')}
-    - Weather Alerts: {"Yes" if weather_data.get('weather_alert') else "None"}
-    - Weather Assessment: {weather_data.get('reasoning', '')}
-    """
-    
-    prompt = f"""As the Health Recommendation Agent, generate personalized health advice:
-    
-    1. Consider the user's metrics (HR: {state.health_data.get('heart_rate')}, Sleep: {state.health_data.get('sleep_hours')}, Steps: {state.health_data.get('steps')})
-    2. Factor in weather data from Weather Agent ({weather_data.get('temperature')}°C, {weather_data.get('condition')})
-    3. Incorporate medical knowledge from documents
-    
-    Provide actionable recommendations for activity, nutrition, and sleep, with special focus on {weather_data.get('exercise_recommendation')} activities at {weather_data.get('intensity_level')} intensity.
-    """
-    
-    response = ""
-    for chunk in llm.stream(prompt):
-        response += chunk
-        state.streaming_response = response
-    
-    state.recommendations.append(AIMessage(content=response))
-    state.agent_reasoning["Recommendations"] = f"Generated personalized health plan (recommending {weather_data.get('exercise_recommendation')} activities)"
-    print("[RECOMMENDATION_AGENT] Generated recommendations successfully")
+    state.recommendations.append(AIMessage(content=recommendation_text))
     return state
 
-# Add global variable to store the vectorstore
-global_vectorstore = None
+def build_recommendation_context(state: HealthAgentState) -> str:
+    """Build context for general recommendations."""
+    health_data = state.health_data
+    sleep_hours = health_data.get('sleep_hours', 0)
+    sleep_score = health_data.get('garmin_data', {}).get('sleep_score', 0)
+    resting_hr = health_data.get('heart_rate', 0)
+    steps = health_data.get('steps', 0)
+    avg_stress = health_data.get('stress_metrics', {}).get('avg_stress', 0)
 
-def setup_rag_components(docs_folder: str):
-    """
-    Tool: Initialize RAG with a user-specified folder.
-    """
+    context_parts = [
+        f"Sleep: {sleep_hours:.1f} hours (Score: {sleep_score}/100)",
+        f"Resting Heart Rate: {resting_hr} bpm",
+        f"Yesterday's Steps: {steps:,}",
+        f"Overall Stress Level: {avg_stress}/100"
+    ]
+    
+    if state.rag_context and "search_results" in state.rag_context:
+        context_parts.append(f"Medical Knowledge Context: {state.rag_context['search_results']}")
+
+    return "\\n".join(context_parts)
+
+def create_recommendation_prompt(context: str) -> str:
+    """Create a simplified prompt for general recommendations."""
+    return f"""You are a helpful health assistant. Based on the following health data:
+
+{context}
+
+Provide a concise and encouraging health recommendation. Focus on general well-being and basic actionable advice related to sleep, activity, heart rate, or stress. Limit to 2-3 sentences."""
+
+###############################################################################
+# MORNING REPORT AGENT (Simplified)
+###############################################################################
+
+def generate_morning_report(state: HealthAgentState) -> HealthAgentState:
+    """Generate a simplified automated morning report based on Garmin health data."""
+    logger.info("Generating simplified morning report")
+    
+    # Extract core metrics
+    health_data = state.health_data
+    garmin_raw = health_data.get('garmin_data', {})
+    
+    sleep_hours = health_data.get('sleep_hours', 0)
+    sleep_score = garmin_raw.get('sleep_score', 0)
+    resting_hr = health_data.get('heart_rate', 0)
+    steps = health_data.get('steps', 0)
+    
+    # Get simplified sleep breakdown
+    sleep_breakdown_text = ""
+    if 'sleep' in health_data and isinstance(health_data['sleep'], dict):
+        sleep_data = health_data['sleep']
+        sleep_quality = sleep_data.get('sleep_quality', 'Unknown')
+        
+        sleep_breakdown_text = f"""
+Sleep Details:
+- Duration: {sleep_hours:.1f} hours
+- Quality: {sleep_quality}
+- Score: {sleep_score}/100"""
+    
+    # Get simplified stress information
+    stress_info = ""
+    if 'stress_metrics' in health_data:
+        stress_data = health_data['stress_metrics']
+        avg_stress = stress_data.get('avg_stress', 0)
+        stress_level = stress_data.get('stress_level', 'Unknown')
+        
+        stress_info = f"""
+Stress Overview:
+- Average Level: {avg_stress}/100
+- Overall Status: {stress_level}"""
+    
+    # Build concise context for LLM
+    context = f"""Yesterday's Health Metrics:
+- Sleep: {sleep_hours:.1f} hours (Score: {sleep_score}/100)
+- Resting Heart Rate: {resting_hr} bpm
+- Yesterday's Steps: {steps:,}
+- Avg Stress: {health_data.get('stress_metrics', {}).get('avg_stress', 0)}/100"""
+    
+    # Create concise, data-driven morning report prompt
+    prompt = f"""Generate a morning report. Be extremely concise and data-driven. Present yesterday's key metrics directly. Then, provide ONE clear, actionable recommendation for today based on these metrics. Omit all pleasantries, lengthy explanations, and verbose encouragement.
+
+{context}
+
+FORMAT REQUIREMENTS:
+- Start immediately with data (no greetings)
+- Present metrics in this exact format:
+  Sleep: [X hrs] (Score: [Y/100])
+  RHR: [Z bpm] 
+  Steps Yesterday: [A]
+  Avg Stress: [B/100]
+- Follow with: "Recommendation: [Single concise action for today based on data]"
+- Maximum 6 lines total
+- Be objective and factual, not conversational
+
+Generate the concise morning report now:"""
+    
+    # Generate the morning report
+    morning_report = ""
+    try:
+        for chunk in llm.stream(prompt):
+            morning_report += chunk
+    except Exception as e:
+        logger.error(f"Error generating morning report: {e}")
+        # Fallback to a concise report
+        morning_report = f"""Sleep: {sleep_hours:.1f} hrs (Score: {sleep_score}/100)
+RHR: {resting_hr} bpm
+Steps Yesterday: {steps:,}
+Avg Stress: {health_data.get('stress_metrics', {}).get('avg_stress', 0)}/100
+
+Recommendation: Focus on today's goals."""
+    
+    # Store the morning report in state
+    state.morning_report = morning_report
+    state.recommendations.append(AIMessage(content=morning_report))
+    
+    logger.info("Morning report generated successfully")
+    return state
+
+###############################################################################
+# RAG SETUP (Optimized for single initialization)
+###############################################################################
+
+def setup_knowledge_base(docs_folder: str):
+    """Initialize RAG system with medical documents (simplified for MVP)."""
     global global_vectorstore
-    print(f"\n[RAG_SETUP] Initializing RAG with folder: {docs_folder}")
+    
+    setup_start = datetime.now()
+    
+    if global_vectorstore is not None:
+        rag_logger.info("Knowledge base already initialized - skipping")
+        return global_vectorstore
+    
+    rag_logger.info(f"Initializing knowledge base: {docs_folder}")
 
-    if not os.path.exists(docs_folder):
-        print(f"[RAG_SETUP] Error: Document folder does not exist: {docs_folder}")
-        return None
-        
-    if global_vectorstore is None:
-        print("[RAG_SETUP] No existing vectorstore found. Creating a new one.")
-        embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'}
-        )
-        
-        print(f"[RAG_SETUP] Processing documents from: {docs_folder}")
-        documents = dp.process_health_documents(docs_folder, is_directory=True)
-        print(f"[RAG_SETUP] Document processing complete. Found {len(documents)} documents.")
-        
-        if not documents:
-            print("[RAG_SETUP] Warning: No documents found or processed.")
-            return None
+    # For MVP, skip RAG entirely to focus on core Garmin functionality
+    rag_logger.info("Skipping RAG setup for MVP - focusing on core Garmin functionality")
+    
+    total_setup_time = (datetime.now() - setup_start).total_seconds()
+    rag_logger.info(f"Knowledge base setup skipped in {total_setup_time:.2f} seconds")
+    return None
 
-        chunked_docs = dp.chunk_documents(documents)
-        print(f"[RAG_SETUP] Chunked documents into {len(chunked_docs)} chunks.")
-
-        print("[RAG_SETUP] Creating Milvus vectorstore instance.")
-        global_vectorstore = Milvus(
-            embedding_function=embeddings,
-            connection_args={"uri": "./milvus_health.db"},
-            collection_name="health_docs_rag",
-            index_params={"metric_type": "L2", "index_type": "FLAT", "params": {"nlist": 1024}},
-            auto_id=True
-        )
-        print(f"[RAG_SETUP] Adding {len(chunked_docs)} chunks to the vectorstore.")
-        global_vectorstore.add_documents(chunked_docs)
-        print("[RAG_SETUP] Documents successfully added to the vectorstore.")
-    else:
-        print("[RAG_SETUP] Using existing vectorstore.")
-    
-    return global_vectorstore
-
-def chat_interact(user_message, chat_history):
-    """
-    Chat function with streaming support
-    """
-    print(f"\n[CHAT] Received message: {user_message}")
-    global global_vectorstore
-    
-    context = ""
-    if global_vectorstore:
-        print("[CHAT] Performing similarity search...")
-        try:
-            relevant_docs = global_vectorstore.similarity_search(user_message, k=3)
-            context = "\n".join([doc.page_content for doc in relevant_docs])
-            print(f"[CHAT] Found {len(relevant_docs)} relevant documents for context.")
-        except Exception as e:
-            print(f"[CHAT] Error during similarity search: {e}")
-            context = "Error retrieving relevant documents."
-    else:
-        print("[CHAT] Warning: No vectorstore available for context retrieval.")
-    
-    history_str = "\n".join([
-        f"User: {h['content'] if h['role'] == 'user' else ''}\nAI: {h['content'] if h['role'] == 'assistant' else ''}"
-        for h in chat_history if h['content']
-    ])
-    
-    prompt = f"""Context from medical documents: {context}
-
-        Chat history:
-        {history_str}
-
-        User: {user_message}
-        AI:"""
-    
-    chat_history.append({"role": "user", "content": user_message})
-    chat_history.append({"role": "assistant", "content": ""})
-    
-    print("[CHAT] Generating response...")
-    for chunk in llm.stream(prompt):
-        chat_history[-1]["content"] += chunk
-        yield "", chat_history
-    
-    print("[CHAT] Completed response")
-    return "", chat_history
+###############################################################################
+# WORKFLOW (Simplified)
+###############################################################################
 
 def build_health_workflow():
-    """
-    Build a workflow that connects specialized health agents.
-    """ 
+    """Build the streamlined health agent workflow."""
     graph = StateGraph(HealthAgentState)
-    graph.add_node("health_metrics", HealthMetricsAgent)
-    graph.add_node("medical_knowledge", MedicalKnowledgeAgent) 
-    graph.add_node("generate_recommendations", RecommendationAgent)
+    graph.add_node("health_metrics", analyze_health_metrics)
+    graph.add_node("medical_knowledge", search_medical_knowledge) 
+    graph.add_node("generate_recommendations", generate_recommendations)
+    graph.add_node("generate_morning_report", generate_morning_report)
     graph.add_edge(START, "health_metrics")
     graph.add_edge("health_metrics", "medical_knowledge")
     graph.add_edge("medical_knowledge", "generate_recommendations")
-    graph.add_edge("generate_recommendations", END)
+    graph.add_edge("generate_recommendations", "generate_morning_report")
+    graph.add_edge("generate_morning_report", END)
     
     return graph.compile()
 
 ###############################################################################
-# GRADIO UI STEPS
+# DATA PROCESSING (Garmin Only)
 ###############################################################################
 
-def generate_synthetic_fitness_data() -> dict:
-    """
-    Generate synthetic health/fitness data for testing.
-    """
-    return {
-        'heart_rate': 75,
-        'steps': 8500,
-        'sleep_hours': 7.5,
-        'calories': 2100,
-        'last_updated': pd.Timestamp.now().isoformat()
-    }
+def process_garmin_data(raw_data: dict) -> dict:
+    """Process Garmin data into expected format."""
+    try:
+        steps_data = raw_data.get('steps', {})
+        heart_rate_data = raw_data.get('heart_rate', {})
+        sleep_data = raw_data.get('sleep', {})
+        stress_data = raw_data.get('stress', {})
+        
+        processed_data = {
+            'heart_rate': heart_rate_data.get('resting_hr', 0),
+            'steps': steps_data.get('steps', 0),
+            'sleep_hours': sleep_data.get('sleep_hours', 0),
+            'calories': steps_data.get('calories', 0),
+            'last_updated': raw_data.get('timestamp', datetime.now().isoformat()),
+            'garmin_data': {
+                'distance_meters': steps_data.get('distance_meters', 0),
+                'sleep_score': sleep_data.get('sleep_score', 0),
+                'stress': stress_data
+            },
+            # Add detailed sleep data for morning report
+            'sleep': sleep_data,
+            'stress_metrics': { # General stress metrics
+                'avg_stress': stress_data.get('average_stress_level', 0),
+                'stress_level': stress_data.get('overall_stress_level', 'Unknown')
+            }
+        }
+        
+        logger.info(f"Processed Garmin data: {processed_data['steps']} steps, {processed_data['sleep_hours']:.1f}h sleep, {processed_data['heart_rate']} bpm")
+        return processed_data
+        
+    except Exception as e:
+        logger.error(f"Error processing Garmin data: {e}")
+        return {}
 
-def initialize_app(data_source: str, folder_path: str):
-    """
-    Initializes the health companion with streaming support
-    """
-    print(f"\n[INIT] Initializing app with data source: {data_source}")
-    print(f"[INIT] Using folder path: {folder_path}")
-    
-    if data_source == "Google Fit":
-        print("[INIT] Getting Google Fit data...")
-        health_data = get_google_fitness_data()
-    else:
-        print("[INIT] Using synthetic data...")
-        health_data = generate_synthetic_fitness_data()
-    
-    print("[INIT] Activating Weather Agent...")
-    weather_data = WeatherAgent(36.1699, -115.1398)  # Las Vegas coordinates
-    print(f"[INIT] Weather analysis complete: {weather_data.get('exercise_recommendation')} exercise recommended")
-    
-    print("[INIT] Creating initial state...")
-    state = HealthAgentState(
-        messages=[HumanMessage(content="User wants personalized recommendations")],
-        health_data=health_data,
-        weather_data=weather_data,
-        recommendations=[]
-    )
+###############################################################################
+# UTILITY FUNCTIONS
+###############################################################################
 
-    print("[INIT] Building and running workflow...")
-    
-    context = f"""
-    Current Health Metrics:
-    - Heart Rate: {health_data.get('heart_rate')} bpm
-    - Sleep: {health_data.get('sleep_hours')} hours
-    - Steps: {health_data.get('steps')}
-    
-    Weather Conditions:
-    - Temperature: {weather_data.get('temperature')}°C
-    - Humidity: {weather_data.get('humidity')}%
-    - Condition: {weather_data.get('condition')}
-    - Activity Location: {weather_data.get('exercise_recommendation')}
-    - Weather Assessment: {weather_data.get('reasoning', '')}
-    """
-    
-    prompt = f"Based on the following health and weather data, provide detailed health recommendations:\n{context}"
-    
-    return llm, prompt
-
-def get_coordinates(city_name):
-    """Get coordinates for a city name using Nominatim geocoder"""
+def get_coordinates(city_name: str) -> tuple[float, float]:
+    """Get coordinates for a city name."""
     try:
         geolocator = Nominatim(user_agent="smart_health_app")
         location = geolocator.geocode(city_name)
-        return (location.latitude, location.longitude) if location else (37.7749, -122.4194)  # Default to San Francisco
+        if location:
+            # Extract coordinates safely
+            lat = getattr(location, 'latitude', None)
+            lon = getattr(location, 'longitude', None)
+            if lat is not None and lon is not None:
+                return (float(lat), float(lon))
+        
+        # Default to San Francisco if city not found
+        return (37.7749, -122.4194)
     except (GeocoderTimedOut, Exception) as e:
-        print(f"[GEOCODER] Error getting coordinates for {city_name}: {e}")
-        return (37.7749, -122.4194)  # Default to San Francisco
+        ui_logger.error(f"Error getting coordinates for {city_name}: {e}")
+        return (37.7749, -122.4194)
 
-def on_initialize(data_src, fpath, city_name):
-    """
-    Handler for initialization button click - runs the agent workflow.
-    """
-    print("[UI] Initialize button clicked.")
-    print(f"[UI] Data Source: {data_src}, Folder/File Path: {fpath}, City: {city_name}")
-    
-    messages = [{"role": "assistant", "content": ""}]
-    initialization_error = None
-    global global_vectorstore
-    global_vectorstore = None # Reset vectorstore on each initialization
-    
+###############################################################################
+# CHAT INTERFACE
+###############################################################################
+
+def chat_interact(user_message: str, chat_history: list, agent_state: HealthAgentState) -> tuple[str, list, HealthAgentState]:
+    """Handle chat interactions and update the Gradio chat history."""
+    ui_logger.info(f"User message: {user_message}")
+    new_message = HumanMessage(content=user_message)
+    agent_state.messages.append(new_message)
+
     try:
-        # 1. Get Location
-        lat, lon = get_coordinates(city_name)
-        
-        # 2. Determine RAG Folder Path
-        rag_folder_path = None
-        if isinstance(fpath, str) and os.path.isdir(fpath):
-            print(f"[UI] Using provided directory path for RAG: {fpath}")
-            rag_folder_path = fpath
-        elif hasattr(fpath, 'name'): 
-             temp_file_path = fpath.name
-             if not temp_file_path.lower().endswith(('.pdf')):
-                 initialization_error = "Error: Only PDF files are accepted."
-                 yield initialization_error, []
-                 return
-             rag_folder_path = os.path.dirname(temp_file_path)
-             print(f"[UI] Processing uploaded PDF from temp directory: {rag_folder_path}")
-        elif isinstance(fpath, str) and os.path.isfile(fpath): # File path string
-             if not fpath.lower().endswith(('.pdf')):
-                 initialization_error = "Error: Only PDF file paths are accepted."
-                 yield initialization_error, []
-                 return
-             rag_folder_path = os.path.dirname(fpath)
-             print(f"[UI] Processing single file path provided: {rag_folder_path}")
-        else:
-            print("[UI] No valid document path/upload provided. Skipping RAG setup.")
-
-        # 3. Initialize RAG 
-        if rag_folder_path:
-             print(f"[UI] Setting up RAG with path: {rag_folder_path}")
-             setup_rag_components(rag_folder_path) 
-             if global_vectorstore is None:
-                 print("[UI] RAG setup did not initialize the vector store.")
-        else:
-             print("[UI] Skipping RAG setup.")
-
-        # 4. Get Health Data
-        print(f"[UI] Getting health data (Source: {data_src})")
-        if data_src == "Google Fit (Deprecated)":
-            try:
-                health_data = get_google_fitness_data()
-                print("[UI] Successfully retrieved Google Fit data")
-            except Exception as e:
-                print(f"[UI] Error accessing Google Fit API: {e}")
-                messages = [{"role": "assistant", "content": "Warning: Google Fit API is deprecated and will be discontinued in 2026. Please use Synthetic Data instead. For more information, visit the Health Connect migration guide."}]
-                yield "Error: Could not access Google Fit API. Please use Synthetic Data instead.", messages
-                return
-        else: # Default to synthetic
-            health_data = generate_synthetic_fitness_data()
-            print(f"[UI] Using synthetic health data")
-        
-        # 5. Get Weather Data
-        print("[UI] Activating Weather Agent...")
-        weather_data = WeatherAgent(lat, lon)
-        print(f"[UI] Weather analysis complete.") 
-        
-        # 6. Build the workflow
-        print("[UI] Building the agent workflow...")
+        # Build and run workflow
         app = build_health_workflow()
+        result_state = app.invoke(agent_state)
         
-        # 7. Prepare initial state
-        print("[UI] Preparing initial state for the workflow...")
-        initial_state = HealthAgentState(
-            health_data=health_data,
-            weather_data=weather_data,
-            messages=[HumanMessage(content="User requested initial health recommendations.")] 
-        )
-
-        # 8. Run the workflow
-        print("[UI] Invoking the agent workflow...")
-        # Use invoke to run the graph to completion
-        final_state = app.invoke(initial_state)
-        print("[UI] Workflow execution completed.")
-
-        # 9. Extract and display the result
-        response_content = final_state.get('streaming_response')
+        # Ensure result_state is a HealthAgentState object
+        if isinstance(result_state, dict):
+            # Convert dict back to HealthAgentState if needed
+            result_state = HealthAgentState(**result_state)
         
-        if not response_content:
-             if final_state.get('recommendations'):
-                 response_content = final_state['recommendations'][-1].content
-             else:
-                 response_content = "Agent workflow finished, but no recommendation message was generated."
-                 print("[UI] Warning: No response content found in final state.")
+        # Get response content
+        if result_state.recommendations:
+            response_content = result_state.recommendations[-1].content
+        else:
+            response_content = "I'm sorry, I couldn't process that request fully. Can you try again?"
 
-        messages = [{"role": "assistant", "content": response_content}]
-        yield initialization_error or "[UI] Initialization complete. Agents activated.", messages
+        agent_response = AIMessage(content=response_content)
+        result_state.messages.append(agent_response)
+        chat_history.append((user_message, response_content))
+        ui_logger.info("Agent response generated successfully")
+
+        return "", chat_history, result_state
+        
+    except Exception as e:
+        ui_logger.error(f"Error in chat interaction: {e}")
+        error_message = f"Error processing your request: {e}"
+        chat_history.append((user_message, error_message))
+        return "", chat_history, agent_state
+
+###############################################################################
+# UI FUNCTIONS (Streamlined)
+###############################################################################
+
+def initialize_system(data_source: str, folder_path: str, city_name: str):
+    """Initialize the health agent system - Garmin only."""
+    start_time = datetime.now()
+    ui_logger.info(f"Starting system initialization at {start_time}")
+
+    try:
+        # Initialize RAG (only once)
+        rag_start = datetime.now()
+        ui_logger.info("Step 1: Initializing knowledge base...")
+        setup_knowledge_base(folder_path)
+        rag_end = datetime.now()
+        ui_logger.info(f"Knowledge base setup took: {(rag_end - rag_start).total_seconds():.2f} seconds")
+
+        # Get Garmin health data
+        garmin_start = datetime.now()
+        ui_logger.info("Step 2: Getting Garmin data...")
+        health_data = {}
+        if data_source == "Garmin":
+            if GARMIN_AVAILABLE:
+                raw_data = get_garmin_health_data()
+                health_data = process_garmin_data(raw_data)
+                ui_logger.info("Successfully retrieved Garmin data")
+            else:
+                ui_logger.error("Garmin integration not available")
+                raise ValueError("Garmin integration not available")
+        else:
+            # Should not be reached with streamlined UI
+            ui_logger.error(f"Unsupported data source: {data_source}")
+            raise ValueError(f"Unsupported data source: {data_source}")
+        garmin_end = datetime.now()
+        ui_logger.info(f"Garmin data retrieval took: {(garmin_end - garmin_start).total_seconds():.2f} seconds")
+
+        # Get weather data
+        weather_start = datetime.now()
+        ui_logger.info("Step 3: Getting weather data...")
+        latitude, longitude = get_coordinates(city_name)
+        weather_data = get_weather_data(latitude, longitude)
+        weather_end = datetime.now()
+        ui_logger.info(f"Weather data retrieval took: {(weather_end - weather_start).total_seconds():.2f} seconds")
+
+        # Initialize agent state with data
+        state_start = datetime.now()
+        ui_logger.info("Step 4: Initializing agent state...")
+        state = HealthAgentState(health_data=health_data, weather_data=weather_data)
+        state_end = datetime.now()
+        ui_logger.info(f"Agent state initialization took: {(state_end - state_start).total_seconds():.2f} seconds")
+
+        # Generate initial morning report
+        report_start = datetime.now()
+        ui_logger.info("Step 5: Generating initial morning report...")
+        state = generate_morning_report(state)
+        report_end = datetime.now()
+        ui_logger.info(f"Morning report generation took: {(report_end - report_start).total_seconds():.2f} seconds")
+        
+        # Convert morning report to proper chat format
+        if state.morning_report:
+            chat_messages = [("System", state.morning_report)]
+        else:
+            chat_messages = [("System", "Morning report generated. System ready!")]
+        
+        total_time = (datetime.now() - start_time).total_seconds()
+        ui_logger.info(f"Total initialization time: {total_time:.2f} seconds")
+        
+        return "System Initialized!", chat_messages, state
 
     except Exception as e:
-        error_msg = f"Error during initialization workflow: {str(e)}"
-        print(f"[UI] Error: {error_msg}")
-        import traceback
-        traceback.print_exc()
-        yield error_msg, [{"role": "assistant", "content": f"An error occurred: {error_msg}"}]
+        ui_logger.error(f"Initialization error: {e}")
+        error_chat = [("System", f"Error: Could not initialize system: {e}")]
+        return f"Initialization Failed: {e}", error_chat, HealthAgentState()
 
 def create_ui():
-    """
-    Creates the Gradio interface with streaming support
-    """
-    with gr.Blocks() as demo:
-        gr.Markdown("# Smart Health Agent")
-        gr.Markdown("### GPU-accelerated personalized health recommendations with specialized agents")
-        
-        with gr.Column(scale=1):
-            data_source = gr.Radio(
-                choices=["Synthetic Data", "Google Fit (Deprecated)"],
-                value="Synthetic Data",
-                label="Health Data Source",
-                info="Note: Google Fit API is deprecated and will be discontinued in 2026. New developers should use Synthetic Data. Existing Google Fit API users can continue using their integration."
-            )
-            city = gr.Textbox(
-                label="Your City",
-                placeholder="Enter your city (e.g. San Francisco)",
-                value="San Francisco",
-                container=True
-            )
-            folder_path = gr.Textbox(
-                label="Medical Knowledge Base",
-                placeholder="Enter path to folder containing medical PDF documents",
-                scale=1,
-                container=True
-            )
-            
-            init_button = gr.Button("Activate Agent System", scale=1)
-            init_output = gr.Textbox(label="Initialization Status", visible=False)
+    """Create the streamlined Gradio user interface."""
+    with gr.Blocks() as demo:  # Removed theme to avoid the themes import error
+        gr.Markdown("# Smart Health Agent 🩺")
+        gr.Markdown("Your personalized AI health assistant with Garmin integration.")
 
-            chatbot = gr.Chatbot(
-                label="Smart Health Agent Chat",
-                height=400,
-                container=True,
-                show_copy_button=True,
-                render_markdown=True,
-                type='messages'
+        with gr.Row():
+            data_source_input = gr.Radio(
+                ["Garmin"], # Only Garmin option
+                label="Select Data Source",
+                value="Garmin",
+                info="Garmin: Real data from Garmin Connect (requires setup)."
             )
-            
-            with gr.Row():
-                msg = gr.Textbox(
-                    label="Ask your health-related questions",
-                    placeholder="Type your message here...",
-                    show_label=True,
-                    lines=2,
-                    container=True,
-                    scale=4
-                )
-            
-            with gr.Row():
-                submit = gr.Button("Send Message", scale=2)
-                clear_button = gr.Button("Clear Chat", scale=1)
+            city_input = gr.Textbox(label="Enter Your City for Weather", value="San Francisco")
+            init_button = gr.Button("Initialize System")
+        
+        system_status = gr.Textbox(label="System Status")
+        chat_history = gr.Chatbot(label="Chat History")
+        user_message = gr.Textbox(label="Your Health Query")
+        send_button = gr.Button("Send")
+
+        # Store state
+        agent_state = gr.State(HealthAgentState())
 
         init_button.click(
-            fn=on_initialize,
-            inputs=[data_source, folder_path, city],
-            outputs=[init_output, chatbot],
+            initialize_system,
+            inputs=[data_source_input, gr.State("documents"), city_input],  # Use actual documents folder
+            outputs=[system_status, chat_history, agent_state]
         )
-        
-        msg.submit(
-            fn=chat_interact,
-            inputs=[msg, chatbot],
-            outputs=[msg, chatbot],
-            queue=True,
-        )
-        
-        submit.click(
-            fn=chat_interact,
-            inputs=[msg, chatbot],
-            outputs=[msg, chatbot],
-            queue=True,
-        )
-        
-        clear_button.click(lambda: ([], ""), inputs=None, outputs=[chatbot, msg])
 
-    return demo
+        send_button.click(
+            chat_interact,
+            inputs=[user_message, chat_history, agent_state],
+            outputs=[user_message, chat_history, agent_state]
+        )
+
+        user_message.submit(
+            chat_interact,
+            inputs=[user_message, chat_history, agent_state],
+            outputs=[user_message, chat_history, agent_state]
+        )
+    
+    demo.launch(inbrowser=True)
 
 if __name__ == "__main__":
-    with gr.Blocks(
-        theme=gr.themes.Base(),
-        title="Smart Health Agent"
-    ) as demo:
-        create_ui()
-    
-    demo.queue()
-    demo.launch(
-        share=False,
-        debug=True
-    )
+    create_ui() 

@@ -31,5 +31,11 @@ google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.0.0
 google-auth>=2.22.0
 
+# Garmin Connect integration
+garminconnect>=0.1.0
+
 # PDF processing
 openpyxl>=3.1.0  # for pandas to_excel 
+
+# Environment variable management
+python-dotenv>=1.0.0 
