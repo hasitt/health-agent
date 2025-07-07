@@ -1,0 +1,8 @@
+# Ignore runtime files and sensitive data
+*.log
+*.db
+.env
+.garmin_tokens/
+vectorstore/
+__pycache__/
+*.pyc
