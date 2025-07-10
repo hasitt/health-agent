@@ -7,6 +7,8 @@ import os
 import json
 import requests
 import gradio as gr
+import tempfile
+import shutil
 from typing import List, Dict, Any
 from pydantic import BaseModel, Field
 from geopy.geocoders import Nominatim
@@ -40,6 +42,9 @@ except ImportError:
 
 # Database integration
 import database
+
+# Cronometer CSV parsing
+import cronometer_parser
 
 # RAG / Milvus imports
 # document_processor removed - not part of MVP
@@ -746,6 +751,149 @@ def show_latest_data() -> str:
     
     return format_latest_data_display(current_user_id)
 
+def format_food_log_display(user_id: int) -> str:
+    """Format the food log data from the database for display."""
+    try:
+        food_data = database.get_food_log_summary(user_id, days=7)
+        
+        output_lines = ["--- Food Log Summary (Last 7 Days) ---"]
+        
+        # Daily summaries
+        if food_data['daily_summaries']:
+            output_lines.append("\n📊 Daily Nutrition Totals:")
+            for day in food_data['daily_summaries']:
+                output_lines.append(
+                    f"  {day['date']}: {day['food_entries']} entries, "
+                    f"{day['total_calories']:.0f} cal, "
+                    f"P:{day['total_protein']:.1f}g C:{day['total_carbs']:.1f}g F:{day['total_fats']:.1f}g"
+                )
+        else:
+            output_lines.append("\n📊 Daily Nutrition: No data available")
+        
+        # Recent food entries
+        if food_data['recent_food_entries']:
+            output_lines.extend(["\n🍽️ Recent Food Entries:", ""])
+            for entry in food_data['recent_food_entries'][:10]:  # Show last 10
+                timestamp = entry.get('timestamp', '')
+                if isinstance(timestamp, str):
+                    try:
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        time_str = dt.strftime('%m/%d %H:%M')
+                    except:
+                        time_str = timestamp
+                else:
+                    time_str = str(timestamp)
+                
+                quantity = entry.get('quantity', 0)
+                unit = entry.get('unit', '')
+                quantity_str = f"{quantity:.1f} {unit}" if unit else f"{quantity:.1f}"
+                
+                output_lines.append(
+                    f"  {time_str}: {entry.get('food_item_name', 'Unknown')} "
+                    f"({quantity_str}, {entry.get('calories', 0):.0f} cal)"
+                )
+        else:
+            output_lines.extend(["\n🍽️ Recent Food Entries: No entries found"])
+        
+        # Recent supplements
+        if food_data['recent_supplements']:
+            output_lines.extend(["\n💊 Recent Supplements:", ""])
+            for supplement in food_data['recent_supplements'][:5]:  # Show last 5
+                timestamp = supplement.get('timestamp', '')
+                if isinstance(timestamp, str):
+                    try:
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        time_str = dt.strftime('%m/%d %H:%M')
+                    except:
+                        time_str = timestamp
+                else:
+                    time_str = str(timestamp)
+                
+                quantity = supplement.get('quantity', 0)
+                unit = supplement.get('unit', '')
+                quantity_str = f"{quantity:.1f} {unit}" if unit else f"{quantity:.1f}"
+                
+                output_lines.append(
+                    f"  {time_str}: {supplement.get('supplement_name', 'Unknown')} ({quantity_str})"
+                )
+        else:
+            output_lines.extend(["\n💊 Recent Supplements: No supplements found"])
+        
+        return "\n".join(output_lines)
+        
+    except Exception as e:
+        logger.error(f"Failed to format food log display: {e}")
+        return f"Error retrieving food log data: {e}"
+
+def upload_cronometer_data(file) -> tuple[str, str]:
+    """Handle Cronometer CSV file upload and processing."""
+    global current_user_id
+    
+    if current_user_id is None:
+        return "❌ Please sync Garmin data first to establish user session", ""
+    
+    if file is None or not hasattr(file, 'name'):
+        return "❌ No file selected. Please select a CSV file first.", ""
+    
+    temp_file_path = None
+    try:
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            shutil.copyfileobj(file, temp_file)
+        
+        logger.info(f"Processing Cronometer CSV: {temp_file_path}")
+        
+        # Validate CSV before processing
+        validation_result = cronometer_parser.validate_cronometer_csv(temp_file_path)
+        
+        if not validation_result['is_valid']:
+            issues = "\n".join(validation_result['issues'])
+            return f"❌ Invalid CSV file:\n{issues}", ""
+        
+        # Parse and import the CSV
+        import_summary = cronometer_parser.parse_cronometer_food_entries_csv(temp_file_path, current_user_id)
+        
+        # Format success message
+        status_msg = f"""✅ Cronometer data imported successfully!
+        
+📊 Import Summary:
+• Total rows processed: {import_summary['total_rows']}
+• Food entries imported: {import_summary['food_entries']}
+• Supplement entries imported: {import_summary['supplement_entries']}
+• Errors: {import_summary['errors']}"""
+        
+        if import_summary['error_details']:
+            status_msg += f"\n\n⚠️ Issues encountered:\n" + "\n".join(import_summary['error_details'][:5])
+        
+        # Get updated food log display
+        food_log_display = format_food_log_display(current_user_id)
+        
+        logger.info(f"Cronometer import completed: {import_summary}")
+        return status_msg, food_log_display
+        
+    except Exception as e:
+        error_msg = f"❌ Failed to process Cronometer CSV: {str(e)}"
+        logger.error(error_msg)
+        return error_msg, ""
+        
+    finally:
+        # Clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+
+def show_food_log() -> str:
+    """Show the current food log data."""
+    global current_user_id
+    
+    if current_user_id is None:
+        return "Please sync Garmin data first to establish user session"
+    
+    return format_food_log_display(current_user_id)
+
 def initialize_system(data_source: str, folder_path: str, city_name: str):
     """Initialize the health agent system - Garmin only."""
     start_time = datetime.now()
@@ -834,14 +982,35 @@ def create_ui():
             with gr.Column():
                 gr.Markdown("### Data Display")
                 show_data_button = gr.Button("Show Latest Data")
+                
+            with gr.Column():
+                gr.Markdown("### Cronometer Data Upload")
+                cronometer_file = gr.File(
+                    label="Upload Cronometer CSV",
+                    file_types=[".csv"],
+                    file_count="single"
+                )
+                upload_cronometer_button = gr.Button("Import Cronometer Data", variant="secondary")
+                cronometer_status = gr.Textbox(label="Import Status", interactive=False)
         
-        # Raw data display area
-        data_display = gr.Textbox(
-            label="Latest Garmin Data",
-            value="Click 'Sync Garmin Data' to start",
-            lines=15,
-            interactive=False
-        )
+        # Data display areas
+        with gr.Row():
+            with gr.Column():
+                data_display = gr.Textbox(
+                    label="Latest Garmin Data",
+                    value="Click 'Sync Garmin Data' to start",
+                    lines=12,
+                    interactive=False
+                )
+            
+            with gr.Column():
+                food_display = gr.Textbox(
+                    label="Food Log Summary (Last 7 Days)",
+                    value="Import Cronometer data to view food log",
+                    lines=12,
+                    interactive=False
+                )
+                show_food_button = gr.Button("Refresh Food Log", variant="secondary", size="sm")
         
         # Health Trends Analysis Section
         gr.Markdown("## Health Trends Analysis 📈")
@@ -913,6 +1082,10 @@ def create_ui():
 
         def handle_show_data():
             return show_latest_data()
+        
+        def handle_cronometer_upload(file):
+            status, food_data = upload_cronometer_data(file)
+            return status, food_data
         
         def handle_analyze_trends():
             """Analyze health trends using the trend analyzer."""
@@ -1023,6 +1196,18 @@ def create_ui():
             handle_generate_ai_insights,
             inputs=[],
             outputs=[ai_insights, morning_report_display]
+        )
+        
+        upload_cronometer_button.click(
+            handle_cronometer_upload,
+            inputs=[cronometer_file],
+            outputs=[cronometer_status, food_display]
+        )
+        
+        show_food_button.click(
+            show_food_log,
+            inputs=[],
+            outputs=[food_display]
         )
     
     demo.launch(inbrowser=True)

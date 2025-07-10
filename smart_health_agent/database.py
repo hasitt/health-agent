@@ -6,7 +6,7 @@ Handles all database operations for Garmin health data and manual inputs.
 import sqlite3
 import os
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Dict, List, Any
 from contextlib import contextmanager
 from pathlib import Path
@@ -142,34 +142,53 @@ def create_tables():
             ON garmin_stress_details(user_id, timestamp)
         """)
         
-        # Food log table
+        # Food log table - Enhanced for Cronometer data
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS food_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                date DATE NOT NULL,
+                time TIME NOT NULL,
                 timestamp DATETIME NOT NULL,
                 meal_type TEXT,
                 food_item_name TEXT NOT NULL,
+                category TEXT DEFAULT 'Food',
                 quantity REAL,
                 unit TEXT,
-                calories INTEGER,
-                protein_g REAL,
-                carbs_g REAL,
-                fats_g REAL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                calories REAL DEFAULT 0,
+                protein_g REAL DEFAULT 0,
+                carbs_g REAL DEFAULT 0,
+                fats_g REAL DEFAULT 0,
+                fiber_g REAL DEFAULT 0,
+                sugar_g REAL DEFAULT 0,
+                sodium_mg REAL DEFAULT 0,
+                vitamin_c_mg REAL DEFAULT 0,
+                iron_mg REAL DEFAULT 0,
+                calcium_mg REAL DEFAULT 0,
+                source TEXT DEFAULT 'cronometer',
+                notes TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, date, time, food_item_name, quantity)
             )
         """)
         
-        # Supplements table
+        # Supplements table - Enhanced for Cronometer data
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS supplements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                date DATE NOT NULL,
+                time TIME NOT NULL,
                 timestamp DATETIME NOT NULL,
                 supplement_name TEXT NOT NULL,
+                quantity REAL,
+                unit TEXT,
                 dosage TEXT,
+                calories REAL DEFAULT 0,
+                source TEXT DEFAULT 'cronometer',
                 notes TEXT,
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, date, time, supplement_name, quantity)
             )
         """)
         
@@ -399,4 +418,118 @@ def get_sync_status(user_id: int) -> Optional[datetime]:
         row = cursor.fetchone()
         if row and row[0]:
             return datetime.fromisoformat(row[0])
-        return None 
+        return None
+
+def upsert_food_entry(user_id: int, food_data: Dict[str, Any]):
+    """Insert or update food log entry based on unique constraints."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO food_log 
+            (user_id, date, time, timestamp, meal_type, food_item_name, category, 
+             quantity, unit, calories, protein_g, carbs_g, fats_g, fiber_g, sugar_g, 
+             sodium_mg, vitamin_c_mg, iron_mg, calcium_mg, source, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            food_data.get('date'),
+            food_data.get('time'),
+            food_data.get('timestamp'),
+            food_data.get('meal_type'),
+            food_data.get('food_item_name'),
+            food_data.get('category', 'Food'),
+            food_data.get('quantity', 0),
+            food_data.get('unit'),
+            food_data.get('calories', 0),
+            food_data.get('protein_g', 0),
+            food_data.get('carbs_g', 0),
+            food_data.get('fats_g', 0),
+            food_data.get('fiber_g', 0),
+            food_data.get('sugar_g', 0),
+            food_data.get('sodium_mg', 0),
+            food_data.get('vitamin_c_mg', 0),
+            food_data.get('iron_mg', 0),
+            food_data.get('calcium_mg', 0),
+            food_data.get('source', 'cronometer'),
+            food_data.get('notes')
+        ))
+        conn.commit()
+
+def upsert_supplement_entry(user_id: int, supplement_data: Dict[str, Any]):
+    """Insert or update supplement entry based on unique constraints."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO supplements 
+            (user_id, date, time, timestamp, supplement_name, quantity, unit, 
+             dosage, calories, source, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            supplement_data.get('date'),
+            supplement_data.get('time'),
+            supplement_data.get('timestamp'),
+            supplement_data.get('supplement_name'),
+            supplement_data.get('quantity', 0),
+            supplement_data.get('unit'),
+            supplement_data.get('dosage'),
+            supplement_data.get('calories', 0),
+            supplement_data.get('source', 'cronometer'),
+            supplement_data.get('notes')
+        ))
+        conn.commit()
+
+def get_food_log_summary(user_id: int, days: int = 7) -> Dict[str, Any]:
+    """Get food log summary for the last N days."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=days)
+        
+        # Get daily totals
+        cursor.execute("""
+            SELECT 
+                date,
+                COUNT(*) as food_entries,
+                SUM(calories) as total_calories,
+                SUM(protein_g) as total_protein,
+                SUM(carbs_g) as total_carbs,
+                SUM(fats_g) as total_fats,
+                SUM(fiber_g) as total_fiber
+            FROM food_log 
+            WHERE user_id = ? AND date BETWEEN ? AND ?
+            GROUP BY date
+            ORDER BY date DESC
+        """, (user_id, start_date, end_date))
+        
+        daily_summaries = [dict(row) for row in cursor.fetchall()]
+        
+        # Get recent food entries
+        cursor.execute("""
+            SELECT food_item_name, quantity, unit, calories, timestamp
+            FROM food_log 
+            WHERE user_id = ? AND date BETWEEN ? AND ?
+            ORDER BY timestamp DESC 
+            LIMIT 20
+        """, (user_id, start_date, end_date))
+        
+        recent_entries = [dict(row) for row in cursor.fetchall()]
+        
+        # Get supplement entries
+        cursor.execute("""
+            SELECT supplement_name, quantity, unit, timestamp
+            FROM supplements 
+            WHERE user_id = ? AND date BETWEEN ? AND ?
+            ORDER BY timestamp DESC 
+            LIMIT 10
+        """, (user_id, start_date, end_date))
+        
+        recent_supplements = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            'daily_summaries': daily_summaries,
+            'recent_food_entries': recent_entries,
+            'recent_supplements': recent_supplements,
+            'period_days': days
+        } 

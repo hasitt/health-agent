@@ -362,11 +362,12 @@ def get_recent_stress_patterns(user_id: int, days_back: int = 7) -> List[str]:
                 return [f"No stress data available for the last {days_back} days."]
             
             observations = []
-            stress_values = [stress for _, stress, _ in stress_data if stress > 0]
+            stress_values = [stress for _, stress, _ in stress_data if stress is not None and stress > 0]
+            max_stress_values = [max_stress for _, _, max_stress in stress_data if max_stress is not None and max_stress > 0]
             
             if stress_values:
                 avg_stress = sum(stress_values) / len(stress_values)
-                max_stress = max(max_stress for _, _, max_stress in stress_data if max_stress > 0)
+                max_stress = max(max_stress_values) if max_stress_values else 0
                 high_stress_days = len([s for s in stress_values if s > 30])
                 
                 observations.append(
