@@ -832,15 +832,35 @@ def upload_cronometer_data(file) -> tuple[str, str]:
     if current_user_id is None:
         return "❌ Please sync Garmin data first to establish user session", ""
     
-    if file is None or not hasattr(file, 'name'):
+    # More robust file validation for Gradio
+    if file is None:
         return "❌ No file selected. Please select a CSV file first.", ""
+    
+    # Check if file is a proper file object with read capability
+    if not hasattr(file, 'read') and not hasattr(file, 'name'):
+        return "❌ Invalid file object. Please select a valid CSV file.", ""
+    
+    # Handle case where file might be a string path or other object
+    if isinstance(file, str):
+        return "❌ Invalid file format. Please upload a CSV file directly.", ""
     
     temp_file_path = None
     try:
         # Create temporary file
         with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
             temp_file_path = temp_file.name
-            shutil.copyfileobj(file, temp_file)
+            
+            # Handle different file object types
+            if hasattr(file, 'read'):
+                # File-like object
+                file.seek(0)  # Reset file pointer
+                shutil.copyfileobj(file, temp_file)
+            elif hasattr(file, 'name') and os.path.exists(file.name):
+                # File path object
+                with open(file.name, 'rb') as source_file:
+                    shutil.copyfileobj(source_file, temp_file)
+            else:
+                return "❌ Cannot read the uploaded file. Please try again.", ""
         
         logger.info(f"Processing Cronometer CSV: {temp_file_path}")
         
