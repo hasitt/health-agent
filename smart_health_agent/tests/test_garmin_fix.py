@@ -75,8 +75,8 @@ def test_data_processing():
                 'deep_sleep_seconds': 14400,
                 'rem_sleep_seconds': 7200
             },
-            'hrv': {
-                'hrv_weekly_average': 45
+            'stress': {
+                'averageStressLevel': 25
             }
         }
         

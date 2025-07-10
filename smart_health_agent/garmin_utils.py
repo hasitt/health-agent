@@ -276,53 +276,7 @@ class GarminHealthData:
                 'hr_zones': []
             }
     
-    def get_hrv_data(self, date: Optional[datetime] = None) -> Dict[str, Any]:
-        """
-        Fetch Heart Rate Variability (HRV) data for a specific date.
-        
-        Args:
-            date: Date to fetch data for (defaults to today)
-            
-        Returns:
-            Dict containing HRV data
-        """
-        if not self.client:
-            raise GarminConnectError("Not logged in. Call login() first.")
-        
-        try:
-            target_date = date or datetime.now()
-            date_str = target_date.strftime('%Y-%m-%d')
-            
-            logger.info(f"Fetching HRV data for {date_str}")
-            
-            # Get HRV data
-            hrv_data = self.client.get_hrv_data(date_str)
-            
-            # Handle case where HRV data is None or empty
-            if hrv_data is None:
-                logger.warning(f"No HRV data available for {date_str}, using defaults")
-                hrv_data = {}
-            
-            # Extract HRV statistics with safe defaults
-            hrv_stats = {
-                'date': date_str,
-                'hrv_values': hrv_data.get('hrvValues', []) if hrv_data else [],
-                'hrv_summary': hrv_data.get('hrvSummary', {}) if hrv_data else {},
-                'hrv_weekly_average': hrv_data.get('weeklyAverage', 0) if hrv_data else 0
-            }
-            
-            logger.info(f"Retrieved HRV data for {date_str}")
-            return hrv_stats
-            
-        except Exception as e:
-            logger.warning(f"Failed to fetch HRV data for {date_str}: {str(e)}")
-            # Return default HRV data instead of raising an exception
-            return {
-                'date': date_str,
-                'hrv_values': [],
-                'hrv_summary': {},
-                'hrv_weekly_average': 0
-            }
+
     
     def get_sleep_data(self, date: Optional[datetime] = None) -> Dict[str, Any]:
         """
@@ -392,7 +346,7 @@ class GarminHealthData:
     
     def get_comprehensive_health_data(self, date: Optional[datetime] = None) -> Dict[str, Any]:
         """
-        Fetch all health data (steps, heart rate, HRV, sleep, stress) for a specific date.
+        Fetch all health data (steps, heart rate, sleep, stress) for a specific date.
         
         Args:
             date: Date to fetch data for (defaults to today)
@@ -429,11 +383,20 @@ class GarminHealthData:
                 logger.warning(f"Failed to get heart rate data: {e}")
                 health_data['heart_rate'] = {'date': date_str, 'resting_hr': 0, 'max_hr': 0, 'min_hr': 0, 'avg_hr': 0, 'hr_zones': []}
             
-            # Try to get HRV data
+            # Try to get HRV data only if device supports it (conditional)
             try:
-                health_data['hrv'] = self.get_hrv_data(target_date)
+                hrv_data = self.client.get_hrv_data(date_str)
+                if hrv_data and isinstance(hrv_data, dict) and hrv_data.get('hrvSummary'):
+                    # Only include HRV if we have actual HRV summary data
+                    health_data['hrv'] = hrv_data
+                    logger.info(f"Retrieved HRV data for {date_str}")
+                else:
+                    # Skip HRV if no meaningful data (device doesn't support it)
+                    logger.debug(f"HRV not supported or no data for {date_str}")
+                    health_data['hrv'] = {'date': date_str, 'hrv_values': [], 'hrv_summary': {}, 'hrv_weekly_average': 0}
             except Exception as e:
-                logger.warning(f"Failed to get HRV data: {e}")
+                # Silently skip HRV if not supported - don't treat as error
+                logger.debug(f"HRV data not available for {date_str}: {e}")
                 health_data['hrv'] = {'date': date_str, 'hrv_values': [], 'hrv_summary': {}, 'hrv_weekly_average': 0}
             
             # Try to get sleep data
@@ -527,13 +490,13 @@ class GarminHealthData:
     
     def get_detailed_stress_data(self, date: Optional[datetime] = None) -> Dict[str, Any]:
         """
-        Fetch detailed time-series stress data for TCM analysis.
+        Fetch detailed time-series stress data for analysis.
         
         Args:
             date: Date to fetch data for (defaults to today)
             
         Returns:
-            Dict containing detailed stress data with timestamps for TCM mapping
+            Dict containing detailed stress data with timestamps for analysis
         """
         if not self.client:
             raise GarminConnectError("Not logged in. Call login() first.")
@@ -542,7 +505,7 @@ class GarminHealthData:
             target_date = date or datetime.now()
             date_str = target_date.strftime('%Y-%m-%d')
             
-            logger.info(f"Fetching detailed stress data for TCM analysis on {date_str}")
+            logger.info(f"Fetching detailed stress data for analysis on {date_str}")
             
             # Get detailed stress data with timestamps
             stress_data = self.client.get_stress_data(date_str)
@@ -642,30 +605,30 @@ class GarminHealthData:
             logger.error(error_msg)
             raise GarminConnectError(error_msg) from e
     
-    def get_stress_data_for_tcm(self, date: Optional[datetime] = None) -> List[tuple]:
+    def get_stress_data_for_analysis(self, date: Optional[datetime] = None) -> List[tuple]:
         """
-        Fetch stress data in the format required for TCM analysis.
+        Fetch stress data in the format required for analysis.
         
         Args:
             date: Date to fetch data for (defaults to today)
             
         Returns:
-            List of (timestamp, stress_level) tuples for TCM mapping
+            List of (timestamp, stress_level) tuples for analysis
         """
         try:
             detailed_data = self.get_detailed_stress_data(date)
             
-            # Convert to the format expected by TCM analysis
+            # Convert to the format expected by analysis
             stress_tuples = []
             for point in detailed_data.get('stress_timeline', []):
                 if point['stress_level'] >= 0:  # Filter out invalid readings
                     stress_tuples.append((point['timestamp'], point['stress_level']))
             
-            logger.info(f"Prepared {len(stress_tuples)} stress data points for TCM analysis")
+            logger.info(f"Prepared {len(stress_tuples)} stress data points for analysis")
             return stress_tuples
             
         except Exception as e:
-            logger.error(f"Failed to prepare stress data for TCM: {e}")
+            logger.error(f"Failed to prepare stress data for analysis: {e}")
             return []
     
     def get_multi_day_stress_data(self, start_date: Optional[datetime] = None, days: int = 7) -> Dict[str, Any]:
@@ -791,4 +754,369 @@ if __name__ == "__main__":
     except GarminConnectError as e:
         print(f"Garmin Connect error: {e}")
     except Exception as e:
-        print(f"Unexpected error: {e}") 
+        print(f"Unexpected error: {e}")
+
+# Database integration imports
+import database
+from datetime import date
+import time
+import threading
+from typing import Union
+
+def transform_daily_summary_for_db(comprehensive_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Transform comprehensive health data into daily summary format for database."""
+    steps_data = comprehensive_data.get('steps', {})
+    hr_data = comprehensive_data.get('heart_rate', {})
+    stress_data = comprehensive_data.get('stress', {})
+    
+    return {
+        'total_steps': steps_data.get('steps', 0),
+        'active_calories': steps_data.get('active_calories', 0),
+        'resting_calories': steps_data.get('bmr_calories', 0),
+        'distance_km': round(steps_data.get('distance_meters', 0) / 1000, 2) if steps_data.get('distance_meters') else 0,
+        'avg_daily_rhr': hr_data.get('resting_hr', 0),
+        'avg_daily_stress': stress_data.get('averageStressLevel', 0),
+        'max_daily_stress': stress_data.get('maxStressLevel', 0),
+        'min_daily_stress': stress_data.get('averageStressLevel', 0)  # Using avg as min since Garmin doesn't provide explicit min
+    }
+
+def transform_sleep_data_for_db(comprehensive_data: Dict[str, Any], target_date: date) -> Optional[Dict[str, Any]]:
+    """Transform comprehensive health data sleep info into database format."""
+    sleep_data = comprehensive_data.get('sleep', {})
+    
+    if not sleep_data or sleep_data.get('sleep_hours', 0) == 0:
+        return None
+    
+    # Parse sleep start/end times
+    sleep_start = sleep_data.get('sleep_start')
+    sleep_end = sleep_data.get('sleep_end')
+    
+    if isinstance(sleep_start, str):
+        try:
+            sleep_start = datetime.fromisoformat(sleep_start.replace('Z', '+00:00'))
+        except:
+            sleep_start = None
+    
+    if isinstance(sleep_end, str):
+        try:
+            sleep_end = datetime.fromisoformat(sleep_end.replace('Z', '+00:00'))
+        except:
+            sleep_end = None
+    
+    if not sleep_start or not sleep_end:
+        return None
+    
+    return {
+        'date': target_date,
+        'sleep_start_time': sleep_start,
+        'sleep_end_time': sleep_end,
+        'total_sleep_minutes': round(sleep_data.get('sleep_time_seconds', 0) / 60),
+        'sleep_score': sleep_data.get('sleep_score', 0),
+        'deep_sleep_minutes': round(sleep_data.get('deep_sleep_seconds', 0) / 60),
+        'rem_sleep_minutes': round(sleep_data.get('rem_sleep_seconds', 0) / 60),
+        'light_sleep_minutes': round(sleep_data.get('light_sleep_seconds', 0) / 60),
+        'awake_minutes': round(sleep_data.get('awake_sleep_seconds', 0) / 60),
+        'avg_rhr_during_sleep': None,  # Would need detailed sleep HR data
+        'avg_stress_during_sleep': None,  # Would need detailed sleep stress data
+        'max_stress_during_sleep': None
+    }
+
+def get_activities_for_date(garmin_client: GarminHealthData, target_date: datetime) -> List[Dict[str, Any]]:
+    """Get activities for a specific date and transform for database."""
+    if not garmin_client.client:
+        return []
+    
+    try:
+        date_str = target_date.strftime('%Y-%m-%d')
+        activities = garmin_client.client.get_activities_by_date(date_str, date_str)
+        
+        transformed_activities = []
+        for activity in activities:
+            try:
+                # Parse start time
+                start_time_str = activity.get('startTimeLocal')
+                if start_time_str:
+                    start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                    end_time = start_time + timedelta(seconds=activity.get('duration', 0))
+                    
+                    transformed_activity = {
+                        'garmin_activity_id': str(activity.get('activityId')),
+                        'activity_type': activity.get('activityType', {}).get('typeKey', 'unknown'),
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'duration_minutes': round(activity.get('duration', 0) / 60),
+                        'calories_burned': activity.get('calories', 0),
+                        'distance_km': round(activity.get('distance', 0) / 1000, 2) if activity.get('distance') else 0,
+                        'avg_hr': activity.get('averageHR', 0),
+                        'max_hr': activity.get('maxHR', 0),
+                        'training_effect': activity.get('aerobicTrainingEffect', 0)
+                    }
+                    transformed_activities.append(transformed_activity)
+            except Exception as e:
+                logger.warning(f"Failed to transform activity {activity.get('activityId', 'unknown')}: {e}")
+                continue
+        
+        return transformed_activities
+    except Exception as e:
+        logger.warning(f"Failed to get activities for {target_date.date()}: {e}")
+        return []
+
+def store_garmin_data_for_date(user_id: int, target_date: datetime, garmin_client: GarminHealthData) -> bool:
+    """Fetch and store all Garmin data for a specific date."""
+    try:
+        logger.info(f"Storing Garmin data for user {user_id} on {target_date.date()}")
+        
+        # Get comprehensive health data
+        comprehensive_data = garmin_client.get_comprehensive_health_data(target_date)
+        
+        # Store daily summary
+        daily_summary = transform_daily_summary_for_db(comprehensive_data)
+        database.insert_daily_summary(user_id, target_date.date(), daily_summary)
+        
+        # Store sleep data if available
+        sleep_data = transform_sleep_data_for_db(comprehensive_data, target_date.date())
+        if sleep_data:
+            database.insert_sleep_data(user_id, sleep_data)
+        
+        # Store activities
+        activities = get_activities_for_date(garmin_client, target_date)
+        for activity in activities:
+            database.insert_activity_data(user_id, activity)
+        
+        # Store granular stress data
+        try:
+            detailed_stress = garmin_client.get_detailed_stress_data(target_date)
+            if detailed_stress and detailed_stress.get('stress_timeline'):
+                # Transform stress timeline to include body battery data
+                stress_timeline = []
+                stress_data = detailed_stress.get('stress_timeline', [])
+                body_battery_data = detailed_stress.get('body_battery_timeline', [])
+                
+                # Create a mapping of timestamps to body battery levels
+                body_battery_map = {}
+                for bb_point in body_battery_data:
+                    if bb_point.get('timestamp'):
+                        body_battery_map[bb_point['timestamp']] = bb_point.get('level', 0)
+                
+                # Combine stress and body battery data
+                for stress_point in stress_data:
+                    enhanced_point = stress_point.copy()
+                    timestamp = stress_point.get('timestamp')
+                    enhanced_point['body_battery_level'] = body_battery_map.get(timestamp, 0)
+                    stress_timeline.append(enhanced_point)
+                
+                database.insert_stress_details(user_id, target_date.date(), stress_timeline)
+                logger.info(f"Stored {len(stress_timeline)} granular stress data points for {target_date.date()}")
+        except Exception as e:
+            logger.warning(f"Failed to store granular stress data for {target_date.date()}: {e}")
+        
+        logger.info(f"Successfully stored data for {target_date.date()}: {len(activities)} activities")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to store Garmin data for {target_date.date()}: {e}")
+        return False
+
+def sync_recent_data(user_id: int, garmin_client: GarminHealthData, days: int = 30) -> bool:
+    """Sync recent Garmin data (last N days)."""
+    try:
+        logger.info(f"Syncing recent {days} days of Garmin data for user {user_id}")
+        
+        end_date = datetime.now()
+        success_count = 0
+        
+        for i in range(days):
+            target_date = end_date - timedelta(days=i)
+            try:
+                if store_garmin_data_for_date(user_id, target_date, garmin_client):
+                    success_count += 1
+                
+                # Small delay to avoid rate limiting
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.warning(f"Failed to sync data for {target_date.date()}: {e}")
+                continue
+        
+        logger.info(f"Successfully synced {success_count}/{days} days of recent data")
+        return success_count > 0
+        
+    except Exception as e:
+        logger.error(f"Failed to sync recent data: {e}")
+        return False
+
+def sync_historical_data_background(user_id: int, garmin_client: GarminHealthData, start_date: datetime, end_date: datetime):
+    """Background task to sync historical Garmin data with rate limiting."""
+    try:
+        logger.info(f"Starting background sync of historical data from {start_date.date()} to {end_date.date()}")
+        
+        current_date = start_date
+        success_count = 0
+        total_days = (end_date - start_date).days + 1
+        
+        while current_date <= end_date:
+            try:
+                if store_garmin_data_for_date(user_id, current_date, garmin_client):
+                    success_count += 1
+                
+                # Rate limiting: sleep between requests
+                time.sleep(2.0)  # 2 second delay to be more respectful
+                
+                # Progress logging every 5 days
+                if success_count % 5 == 0:
+                    logger.info(f"Historical sync progress: {success_count}/{total_days} days completed")
+                
+            except Exception as e:
+                logger.warning(f"Failed to sync historical data for {current_date.date()}: {e}")
+                # Exponential backoff on errors
+                time.sleep(min(5.0, 1.0 * 2))
+            
+            current_date += timedelta(days=1)
+        
+        # Update sync status
+        database.update_last_sync_date(user_id, datetime.now())
+        logger.info(f"Completed background historical sync: {success_count}/{total_days} days successful")
+        
+    except Exception as e:
+        logger.error(f"Background historical sync failed: {e}")
+
+def start_hybrid_sync(user_id: int, garmin_client: GarminHealthData, enable_background: bool = True) -> bool:
+    """Start hybrid sync strategy: recent data immediately, historical data in background."""
+    try:
+        # Check if this is first sync
+        last_sync = database.get_sync_status(user_id)
+        
+        if last_sync is None:
+            # First sync: get recent data immediately
+            logger.info("First sync detected - fetching recent data immediately")
+            recent_success = sync_recent_data(user_id, garmin_client, 30)
+            
+            if recent_success and enable_background:
+                # Start background historical sync (2 years for comprehensive trend analysis)
+                historical_start = datetime.now() - timedelta(days=730)  # 2 years
+                historical_end = datetime.now() - timedelta(days=31)  # Start from 31 days ago
+                
+                logger.info(f"Starting background historical data sync for {(historical_end - historical_start).days} days")
+                sync_thread = threading.Thread(
+                    target=sync_historical_data_background,
+                    args=(user_id, garmin_client, historical_start, historical_end),
+                    daemon=True
+                )
+                sync_thread.start()
+                
+                return True
+            elif recent_success:
+                logger.info("Background sync disabled - only recent data synced")
+                database.update_last_sync_date(user_id, datetime.now())
+                return True
+        else:
+            # Incremental sync: get data since last sync
+            logger.info(f"Incremental sync from {last_sync.date()}")
+            days_since_sync = (datetime.now() - last_sync).days + 1  # Include today
+            incremental_success = sync_recent_data(user_id, garmin_client, min(days_since_sync, 30))
+            
+            if incremental_success:
+                database.update_last_sync_date(user_id, datetime.now())
+                return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Hybrid sync failed: {e}")
+        return False 
+
+def get_detailed_heart_rate_data(garmin_client: GarminHealthData, date: Optional[datetime] = None) -> Dict[str, Any]:
+    """Get detailed heart rate data with timestamps for trend analysis."""
+    if not garmin_client.client:
+        raise GarminConnectError("Not logged in. Call login() first.")
+    
+    try:
+        target_date = date or datetime.now()
+        date_str = target_date.strftime('%Y-%m-%d')
+        
+        logger.info(f"Fetching detailed heart rate data for {date_str}")
+        
+        hr_data = garmin_client.client.get_heart_rates(date_str)
+        
+        if not hr_data:
+            return {'date': date_str, 'hr_timeline': [], 'summary': {}}
+        
+        # Extract heart rate timeline
+        hr_timeline = []
+        if 'heartRateValues' in hr_data and hr_data['heartRateValues']:
+            for entry in hr_data['heartRateValues']:
+                if len(entry) >= 2:
+                    timestamp_ms = entry[0]
+                    hr_value = entry[1]
+                    
+                    try:
+                        timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000)
+                        hr_timeline.append({
+                            'timestamp': timestamp_dt,
+                            'timestamp_ms': timestamp_ms,
+                            'heart_rate': hr_value,
+                            'datetime_str': timestamp_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                    except (ValueError, OSError) as e:
+                        logger.warning(f"Invalid timestamp in HR data: {timestamp_ms}, error: {e}")
+                        continue
+        
+        # Calculate summary statistics
+        hr_values = [point['heart_rate'] for point in hr_timeline if point['heart_rate'] > 0]
+        summary = {
+            'resting_hr': hr_data.get('restingHeartRate', 0),
+            'max_hr': max(hr_values) if hr_values else 0,
+            'min_hr': min(hr_values) if hr_values else 0,
+            'avg_hr': round(sum(hr_values) / len(hr_values), 2) if hr_values else 0,
+            'data_points': len(hr_timeline),
+            'seven_day_avg_rhr': hr_data.get('lastSevenDaysAvgRestingHeartRate', 0)
+        }
+        
+        return {
+            'date': date_str,
+            'hr_timeline': hr_timeline,
+            'summary': summary
+        }
+        
+    except Exception as e:
+        error_msg = f"Failed to fetch detailed HR data for {date_str}: {str(e)}"
+        logger.error(error_msg)
+        raise GarminConnectError(error_msg) from e
+
+def analyze_stress_patterns(user_id: int, days: int = 30) -> Dict[str, Any]:
+    """Analyze stress patterns for comprehensive trending."""
+    try:
+        # This would integrate with database to get historical stress data
+        # For now, return structure for future implementation
+        return {
+            'analysis_period': f'{days} days',
+            'patterns': {
+                'daily_averages': [],
+                'peak_stress_times': [],
+                'stress_recovery_patterns': [],
+                'correlation_with_sleep': {}
+            },
+            'recommendations': []
+        }
+    except Exception as e:
+        logger.error(f"Failed to analyze stress patterns: {e}")
+        return {}
+
+def analyze_heart_rate_trends(user_id: int, days: int = 30) -> Dict[str, Any]:
+    """Analyze heart rate trends for comprehensive health insights."""
+    try:
+        # This would integrate with database to get historical HR data
+        # For now, return structure for future implementation
+        return {
+            'analysis_period': f'{days} days',
+            'trends': {
+                'resting_hr_trend': [],
+                'hr_variability_patterns': [],
+                'activity_recovery_patterns': [],
+                'sleep_hr_patterns': []
+            },
+            'insights': []
+        }
+    except Exception as e:
+        logger.error(f"Failed to analyze HR trends: {e}")
+        return {} 

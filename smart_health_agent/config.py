@@ -11,7 +11,7 @@ class Config:
     """Application configuration settings."""
     
     # Ollama configuration
-    OLLAMA_HOST = ""
+    OLLAMA_HOST = "http://localhost:11434"
     OLLAMA_MODEL = 'gemma3:4b-it-q4_K_M'
     OLLAMA_TEMPERATURE = 0.2
     
@@ -21,7 +21,7 @@ class Config:
     
     # File paths
     BASE_DIR = Path(__file__).parent
-    TCM_KNOWLEDGE_FILE = BASE_DIR / "tcm_knowledge_base.md"
+    # TCM_KNOWLEDGE_FILE removed - not part of MVP
     
     # Logging configuration
     LOG_LEVEL = logging.INFO

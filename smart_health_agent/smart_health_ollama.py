@@ -27,20 +27,22 @@ from langchain_ollama import OllamaLLM
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
 from langchain.prompts import PromptTemplate
-from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_models import ChatOllama
 
 # Garmin Connect integration
 try:
-    from garmin_utils import get_garmin_health_data, GarminConnectError, GarminHealthData
+    from garmin_utils import get_garmin_health_data, GarminConnectError, GarminHealthData, start_hybrid_sync
     GARMIN_AVAILABLE = True
 except ImportError:
     GARMIN_AVAILABLE = False
     get_logger('health_agent').warning("Garmin integration not available")
 
+# Database integration
+import database
+
 # RAG / Milvus imports
-import document_processor as dp
+# document_processor removed - not part of MVP
 
 # Initialize components
 logger = get_logger('health_agent')
@@ -72,9 +74,7 @@ class HealthAgentState(BaseModel):
     streaming_response: str = Field(default="")
     morning_report: str = Field(default="")
     
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
+    model_config = {"extra": "allow", "arbitrary_types_allowed": True}
 
 ###############################################################################
 # WEATHER AGENT
@@ -186,10 +186,14 @@ def search_medical_knowledge(state: HealthAgentState) -> HealthAgentState:
 ###############################################################################
 
 def generate_recommendations(state: HealthAgentState) -> HealthAgentState:
-    """Generate simple recommendations based on health data."""
-    logger.info("Generating general recommendations")
+    """Generate personalized recommendations based on health data and trend analysis."""
+    logger.info("Generating personalized recommendations with trend analysis")
     
-    context = build_recommendation_context(state)
+    # Get trend analysis results
+    trend_results = get_trend_analysis_results(state)
+    
+    # Build enhanced context with trend data
+    context = build_recommendation_context(state, trend_results)
     prompt = create_recommendation_prompt(context)
     
     recommendation_text = ""
@@ -203,8 +207,45 @@ def generate_recommendations(state: HealthAgentState) -> HealthAgentState:
     state.recommendations.append(AIMessage(content=recommendation_text))
     return state
 
-def build_recommendation_context(state: HealthAgentState) -> str:
-    """Build context for general recommendations."""
+def get_trend_analysis_results(state: HealthAgentState) -> Dict[str, List[str]]:
+    """Get trend analysis results for the current user."""
+    global current_user_id
+    
+    trend_results = {
+        'stress_consistency': [],
+        'recent_stress': [],
+        'steps_vs_sleep': [],
+        'activity_rhr_impact': []
+    }
+    
+    if current_user_id is None:
+        logger.warning("No current user ID available for trend analysis")
+        return trend_results
+    
+    try:
+        import trend_analyzer
+        
+        # Get stress consistency analysis
+        trend_results['stress_consistency'] = trend_analyzer.get_hourly_stress_consistency(current_user_id)
+        
+        # Get recent stress patterns
+        trend_results['recent_stress'] = trend_analyzer.get_recent_stress_patterns(current_user_id)
+        
+        # Get steps vs sleep analysis
+        trend_results['steps_vs_sleep'] = trend_analyzer.get_steps_vs_sleep_effect(current_user_id)
+        
+        # Get activity type vs RHR analysis
+        trend_results['activity_rhr_impact'] = trend_analyzer.get_activity_type_rhr_impact(current_user_id)
+        
+        logger.info("Successfully retrieved trend analysis results")
+        
+    except Exception as e:
+        logger.error(f"Error getting trend analysis results: {e}")
+    
+    return trend_results
+
+def build_recommendation_context(state: HealthAgentState, trend_results: Dict[str, List[str]] = None) -> str:
+    """Build enhanced context for personalized recommendations including trend analysis."""
     health_data = state.health_data
     sleep_hours = health_data.get('sleep_hours', 0)
     sleep_score = health_data.get('garmin_data', {}).get('sleep_score', 0)
@@ -212,33 +253,98 @@ def build_recommendation_context(state: HealthAgentState) -> str:
     steps = health_data.get('steps', 0)
     avg_stress = health_data.get('stress_metrics', {}).get('avg_stress', 0)
 
+    # Build basic health data context
     context_parts = [
+        "=== CURRENT HEALTH DATA ===",
         f"Sleep: {sleep_hours:.1f} hours (Score: {sleep_score}/100)",
         f"Resting Heart Rate: {resting_hr} bpm",
         f"Yesterday's Steps: {steps:,}",
-        f"Overall Stress Level: {avg_stress}/100"
+        f"Overall Stress Level: {avg_stress}/100",
+        ""
     ]
     
+    # Add trend analysis results if available
+    if trend_results:
+        context_parts.append("=== IDENTIFIED HEALTH TRENDS ===")
+        
+        # Stress consistency patterns
+        if trend_results.get('stress_consistency'):
+            context_parts.append("Stress Consistency Analysis:")
+            for observation in trend_results['stress_consistency']:
+                context_parts.append(f"  • {observation}")
+            context_parts.append("")
+        
+        # Recent stress patterns
+        if trend_results.get('recent_stress'):
+            context_parts.append("Recent Stress Patterns (7 days):")
+            for observation in trend_results['recent_stress']:
+                context_parts.append(f"  • {observation}")
+            context_parts.append("")
+        
+        # Steps vs sleep correlation
+        if trend_results.get('steps_vs_sleep'):
+            context_parts.append("Steps vs Sleep Quality Analysis:")
+            for observation in trend_results['steps_vs_sleep']:
+                context_parts.append(f"  • {observation}")
+            context_parts.append("")
+        
+        # Activity type vs RHR impact
+        if trend_results.get('activity_rhr_impact'):
+            context_parts.append("Activity Type vs Resting Heart Rate Analysis:")
+            for observation in trend_results['activity_rhr_impact']:
+                context_parts.append(f"  • {observation}")
+            context_parts.append("")
+    
+    # Add medical knowledge context if available
     if state.rag_context and "search_results" in state.rag_context:
-        context_parts.append(f"Medical Knowledge Context: {state.rag_context['search_results']}")
+        context_parts.extend([
+            "=== MEDICAL KNOWLEDGE CONTEXT ===",
+            state.rag_context['search_results'],
+            ""
+        ])
 
-    return "\\n".join(context_parts)
+    return "\n".join(context_parts)
 
 def create_recommendation_prompt(context: str) -> str:
-    """Create a simplified prompt for general recommendations."""
-    return f"""You are a helpful health assistant. Based on the following health data:
+    """Create an enhanced prompt for personalized health recommendations based on trend analysis."""
+    return f"""You are a highly knowledgeable and empathetic AI health coach. Your goal is to provide personalized, actionable insights and recommendations based on the user's health data and identified trends.
+
+ROLE & RESPONSIBILITIES:
+- Analyze provided factual health data and identified trends
+- Generate personalized, actionable insights and practical recommendations  
+- Be supportive, encouraging, and clear in your communication
+- Focus on evidence-based advice that can improve health outcomes
+
+CRITICAL CONSTRAINTS:
+- Do NOT invent or assume any data not provided in the context
+- Only interpret and analyze the data explicitly given to you
+- If a trend is neutral, unclear, or insufficient data exists, state this factually
+- Base all recommendations strictly on the provided information
+- Avoid medical diagnosis - focus on lifestyle and wellness recommendations
+
+Here is the user's health data and identified trends:
 
 {context}
 
-Provide a concise and encouraging health recommendation. Focus on general well-being and basic actionable advice related to sleep, activity, heart rate, or stress. Limit to 2-3 sentences."""
+Based on this information, please provide:
+
+1. **Key Insights**: What do the trends and current data tell us about the user's health patterns?
+
+2. **Actionable Recommendations**: 3-5 specific, practical steps the user can take to improve their health or maintain positive trends.
+
+3. **Areas for Attention**: Any patterns that might warrant closer monitoring or additional data collection (e.g., "Consider tracking X to better understand Y").
+
+4. **Positive Reinforcement**: Acknowledge any positive trends or healthy behaviors evident in the data.
+
+Keep your response comprehensive but concise (aim for 200-300 words). Be encouraging and focus on achievable, realistic advice."""
 
 ###############################################################################
 # MORNING REPORT AGENT (Simplified)
 ###############################################################################
 
 def generate_morning_report(state: HealthAgentState) -> HealthAgentState:
-    """Generate a simplified automated morning report based on Garmin health data."""
-    logger.info("Generating simplified morning report")
+    """Generate an enhanced morning report with trend insights for actionable daily guidance."""
+    logger.info("Generating enhanced morning report with trend insights")
     
     # Extract core metrics
     health_data = state.health_data
@@ -248,55 +354,57 @@ def generate_morning_report(state: HealthAgentState) -> HealthAgentState:
     sleep_score = garmin_raw.get('sleep_score', 0)
     resting_hr = health_data.get('heart_rate', 0)
     steps = health_data.get('steps', 0)
+    avg_stress = health_data.get('stress_metrics', {}).get('avg_stress', 0)
     
-    # Get simplified sleep breakdown
-    sleep_breakdown_text = ""
-    if 'sleep' in health_data and isinstance(health_data['sleep'], dict):
-        sleep_data = health_data['sleep']
-        sleep_quality = sleep_data.get('sleep_quality', 'Unknown')
+    # Get trend analysis results for context
+    trend_results = get_trend_analysis_results(state)
+    
+    # Build context with basic metrics and key trends
+    context_parts = [
+        "=== YESTERDAY'S HEALTH METRICS ===",
+        f"Sleep: {sleep_hours:.1f} hours (Score: {sleep_score}/100)",
+        f"Resting Heart Rate: {resting_hr} bpm", 
+        f"Steps: {steps:,}",
+        f"Average Stress: {avg_stress}/100",
+        ""
+    ]
+    
+    # Add most relevant trend insights for morning context
+    if trend_results:
+        context_parts.append("=== KEY RECENT TRENDS ===")
         
-        sleep_breakdown_text = f"""
-Sleep Details:
-- Duration: {sleep_hours:.1f} hours
-- Quality: {sleep_quality}
-- Score: {sleep_score}/100"""
-    
-    # Get simplified stress information
-    stress_info = ""
-    if 'stress_metrics' in health_data:
-        stress_data = health_data['stress_metrics']
-        avg_stress = stress_data.get('avg_stress', 0)
-        stress_level = stress_data.get('stress_level', 'Unknown')
+        # Add recent stress patterns (most relevant for daily planning)
+        if trend_results.get('recent_stress'):
+            context_parts.append("Recent Stress Pattern:")
+            context_parts.append(f"  • {trend_results['recent_stress'][0]}" if trend_results['recent_stress'] else "  • No recent stress data")
         
-        stress_info = f"""
-Stress Overview:
-- Average Level: {avg_stress}/100
-- Overall Status: {stress_level}"""
+        # Add most recent steps vs sleep finding  
+        if trend_results.get('steps_vs_sleep'):
+            context_parts.append("Activity-Sleep Correlation:")
+            context_parts.append(f"  • {trend_results['steps_vs_sleep'][0]}" if trend_results['steps_vs_sleep'] else "  • No activity correlation data")
+        
+        context_parts.append("")
     
-    # Build concise context for LLM
-    context = f"""Yesterday's Health Metrics:
-- Sleep: {sleep_hours:.1f} hours (Score: {sleep_score}/100)
-- Resting Heart Rate: {resting_hr} bpm
-- Yesterday's Steps: {steps:,}
-- Avg Stress: {health_data.get('stress_metrics', {}).get('avg_stress', 0)}/100"""
+    context = "\n".join(context_parts)
     
-    # Create concise, data-driven morning report prompt
-    prompt = f"""Generate a morning report. Be extremely concise and data-driven. Present yesterday's key metrics directly. Then, provide ONE clear, actionable recommendation for today based on these metrics. Omit all pleasantries, lengthy explanations, and verbose encouragement.
+    # Create morning report prompt focused on actionable daily insights
+    prompt = f"""You are an AI health coach providing a concise morning briefing. Based on yesterday's health metrics and recent trends, provide a focused morning report for actionable daily planning.
 
 {context}
 
-FORMAT REQUIREMENTS:
-- Start immediately with data (no greetings)
-- Present metrics in this exact format:
-  Sleep: [X hrs] (Score: [Y/100])
-  RHR: [Z bpm] 
-  Steps Yesterday: [A]
-  Avg Stress: [B/100]
-- Follow with: "Recommendation: [Single concise action for today based on data]"
-- Maximum 6 lines total
-- Be objective and factual, not conversational
+Generate a morning report with this structure:
 
-Generate the concise morning report now:"""
+**Yesterday's Summary:**
+- Brief assessment of yesterday's key metrics (2-3 sentences)
+
+**Today's Focus:**
+- ONE primary actionable recommendation for today based on the data and trends
+- ONE secondary consideration if warranted by the trends
+
+**Quick Insight:**
+- One brief insight from the recent trends that's relevant for today's planning
+
+Keep the entire response under 150 words. Be concise, actionable, and encouraging while staying strictly factual about the provided data."""
     
     # Generate the morning report
     morning_report = ""
@@ -306,18 +414,20 @@ Generate the concise morning report now:"""
     except Exception as e:
         logger.error(f"Error generating morning report: {e}")
         # Fallback to a concise report
-        morning_report = f"""Sleep: {sleep_hours:.1f} hrs (Score: {sleep_score}/100)
-RHR: {resting_hr} bpm
-Steps Yesterday: {steps:,}
-Avg Stress: {health_data.get('stress_metrics', {}).get('avg_stress', 0)}/100
+        morning_report = f"""**Yesterday's Summary:**
+Sleep: {sleep_hours:.1f} hrs (Score: {sleep_score}/100), RHR: {resting_hr} bpm, Steps: {steps:,}, Stress: {avg_stress}/100
 
-Recommendation: Focus on today's goals."""
+**Today's Focus:**
+Focus on maintaining consistent activity levels and stress management.
+
+**Quick Insight:**
+Continue monitoring daily patterns for optimal health outcomes."""
     
     # Store the morning report in state
     state.morning_report = morning_report
     state.recommendations.append(AIMessage(content=morning_report))
     
-    logger.info("Morning report generated successfully")
+    logger.info("Enhanced morning report generated successfully")
     return state
 
 ###############################################################################
@@ -465,6 +575,177 @@ def chat_interact(user_message: str, chat_history: list, agent_state: HealthAgen
 # UI FUNCTIONS (Streamlined)
 ###############################################################################
 
+# Global variables for user session
+current_user_id = None
+current_garmin_client = None
+
+def initialize_database():
+    """Initialize the SQLite database."""
+    try:
+        database.create_tables()
+        logger.info("Database initialized successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        return False
+
+def format_latest_data_display(user_id: int) -> str:
+    """Format the latest data from the database for display."""
+    try:
+        data = database.get_latest_data(user_id, days=1)
+        
+        output_lines = ["--- Latest Garmin Data ---"]
+        
+        # Daily Summary
+        if data['daily_summaries']:
+            summary = data['daily_summaries'][0]
+            output_lines.extend([
+                f"Daily Summary ({summary['date']}):",
+                f"  Steps: {summary.get('total_steps', 0):,}",
+                f"  Active Calories: {summary.get('active_calories', 0)}",
+                f"  Avg RHR: {summary.get('avg_daily_rhr', 0)} bpm",
+                f"  Avg Stress: {summary.get('avg_daily_stress', 0)}/100",
+                ""
+            ])
+        else:
+            output_lines.extend(["Daily Summary: No data available", ""])
+        
+        # Sleep Data
+        if data['sleep_data']:
+            sleep = data['sleep_data'][0]
+            
+            # Format sleep start/end times properly
+            sleep_start_raw = sleep.get('sleep_start_time', 'Unknown')
+            sleep_end_raw = sleep.get('sleep_end_time', 'Unknown')
+            
+            # Convert to readable format - handle both timestamp and string formats
+            def format_sleep_time(time_raw):
+                if time_raw == 'Unknown' or time_raw is None:
+                    return 'Unknown'
+                
+                # Handle raw timestamp (milliseconds since epoch)
+                if isinstance(time_raw, (int, float)):
+                    try:
+                        # Convert milliseconds to seconds
+                        timestamp_seconds = time_raw / 1000
+                        dt = datetime.fromtimestamp(timestamp_seconds)
+                        return dt.strftime('%H:%M')
+                    except:
+                        return str(time_raw)
+                
+                # Handle datetime string
+                if isinstance(time_raw, str):
+                    try:
+                        dt = datetime.fromisoformat(time_raw.replace('Z', '+00:00'))
+                        return dt.strftime('%H:%M')
+                    except:
+                        return str(time_raw)
+                
+                return str(time_raw)
+            
+            sleep_start = format_sleep_time(sleep_start_raw)
+            sleep_end = format_sleep_time(sleep_end_raw)
+            
+            total_sleep = sleep.get('total_sleep_minutes', 0)
+            sleep_score = sleep.get('sleep_score', 0)
+            deep = sleep.get('deep_sleep_minutes', 0)
+            rem = sleep.get('rem_sleep_minutes', 0)
+            light = sleep.get('light_sleep_minutes', 0)
+            awake = sleep.get('awake_minutes', 0)
+            
+            output_lines.extend([
+                f"Sleep ({sleep['date']}):",
+                f"  Start: {sleep_start}",
+                f"  End: {sleep_end}",
+                f"  Total Sleep: {total_sleep} min (Score: {sleep_score}/100)",
+                f"  Deep/REM/Light/Awake: {deep}/{rem}/{light}/{awake} min",
+                ""
+            ])
+        else:
+            output_lines.extend(["Sleep: No data available", ""])
+        
+        # Activities
+        if data['activities']:
+            output_lines.append("Recent Activities:")
+            for activity in data['activities'][:5]:  # Show last 5 activities
+                activity_type = activity.get('activity_type', 'Unknown')
+                start_time_raw = activity.get('start_time', 'Unknown')
+                duration = activity.get('duration_minutes', 0)
+                distance = activity.get('distance_km', 0)
+                calories = activity.get('calories_burned', 0)
+                
+                # Format start time
+                try:
+                    if isinstance(start_time_raw, str) and start_time_raw != 'Unknown':
+                        start_time = datetime.fromisoformat(start_time_raw.replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M')
+                    else:
+                        start_time = str(start_time_raw)
+                except:
+                    start_time = str(start_time_raw)
+                
+                output_lines.append(
+                    f"  - {activity_type} at {start_time} for {duration} min "
+                    f"({distance} km, {calories} cal)"
+                )
+        else:
+            output_lines.extend(["Activities: No recent activities"])
+        
+        return "\n".join(output_lines)
+        
+    except Exception as e:
+        logger.error(f"Failed to format latest data: {e}")
+        return f"Error retrieving data: {e}"
+
+def sync_garmin_data() -> tuple[str, str]:
+    """Sync Garmin data using hybrid strategy."""
+    global current_user_id, current_garmin_client
+    
+    if not GARMIN_AVAILABLE:
+        return "❌ Garmin integration not available", ""
+    
+    try:
+        # Initialize Garmin client if not already done
+        if current_garmin_client is None:
+            current_garmin_client = GarminHealthData()
+            current_garmin_client.login()
+            
+            # Get user info and store in database
+            # For MVP, we'll use a simple user ID approach
+            garmin_user_id = "garmin_user_1"  # In real app, get from Garmin API
+            current_user_id = database.insert_or_update_user(
+                garmin_user_id=garmin_user_id,
+                name="Garmin User",
+                access_token="token",  # In real app, get actual tokens
+                refresh_token="refresh_token",
+                token_expiry=datetime.now() + timedelta(days=365)
+            )
+        
+        # Start hybrid sync (enable background for comprehensive historical data)
+        if current_user_id is not None:
+            sync_success = start_hybrid_sync(current_user_id, current_garmin_client, enable_background=True)
+            
+            if sync_success:
+                # Get and display latest data
+                latest_data = format_latest_data_display(current_user_id)
+                return "✅ Garmin sync completed (recent 30 days)", latest_data
+            else:
+                return "❌ Failed to sync Garmin data", ""
+        else:
+            return "❌ Failed to initialize user", ""
+            
+    except Exception as e:
+        logger.error(f"Failed to sync Garmin data: {e}")
+        return f"❌ Sync failed: {e}", ""
+
+def show_latest_data() -> str:
+    """Show the latest data from database."""
+    global current_user_id
+    
+    if current_user_id is None:
+        return "Please sync Garmin data first"
+    
+    return format_latest_data_display(current_user_id)
+
 def initialize_system(data_source: str, folder_path: str, city_name: str):
     """Initialize the health agent system - Garmin only."""
     start_time = datetime.now()
@@ -536,45 +817,212 @@ def initialize_system(data_source: str, folder_path: str, city_name: str):
         return f"Initialization Failed: {e}", error_chat, HealthAgentState()
 
 def create_ui():
-    """Create the streamlined Gradio user interface."""
-    with gr.Blocks() as demo:  # Removed theme to avoid the themes import error
+    """Create the new database-focused Gradio user interface."""
+    # Initialize database on startup
+    initialize_database()
+    
+    with gr.Blocks() as demo:
         gr.Markdown("# Smart Health Agent 🩺")
-        gr.Markdown("Your personalized AI health assistant with Garmin integration.")
+        gr.Markdown("**MVP Version**: Garmin data storage, analysis, and trend correlations")
 
         with gr.Row():
-            data_source_input = gr.Radio(
-                ["Garmin"], # Only Garmin option
-                label="Select Data Source",
-                value="Garmin",
-                info="Garmin: Real data from Garmin Connect (requires setup)."
-            )
-            city_input = gr.Textbox(label="Enter Your City for Weather", value="San Francisco")
-            init_button = gr.Button("Initialize System")
+            with gr.Column():
+                gr.Markdown("### Garmin Data Sync")
+                sync_button = gr.Button("Sync Garmin Data", variant="primary")
+                sync_status = gr.Textbox(label="Sync Status", interactive=False)
+                
+            with gr.Column():
+                gr.Markdown("### Data Display")
+                show_data_button = gr.Button("Show Latest Data")
         
-        system_status = gr.Textbox(label="System Status")
-        chat_history = gr.Chatbot(label="Chat History")
-        user_message = gr.Textbox(label="Your Health Query")
-        send_button = gr.Button("Send")
+        # Raw data display area
+        data_display = gr.Textbox(
+            label="Latest Garmin Data",
+            value="Click 'Sync Garmin Data' to start",
+            lines=15,
+            interactive=False
+        )
+        
+        # Health Trends Analysis Section
+        gr.Markdown("## Health Trends Analysis 📈")
+        
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### Factual Trend Data")
+                stress_consistency = gr.Textbox(
+                    label="Stress Consistency Analysis",
+                    value="Click 'Analyze Trends' to view stress patterns",
+                    lines=4,
+                    interactive=False
+                )
+                
+                recent_stress = gr.Textbox(
+                    label="Recent Stress Patterns (7 days)",
+                    value="Click 'Analyze Trends' to view recent patterns",
+                    lines=3,
+                    interactive=False
+                )
+                
+            with gr.Column():
+                gr.Markdown("### Activity & Sleep Correlations")
+                steps_sleep = gr.Textbox(
+                    label="Steps vs Sleep Quality",
+                    value="Click 'Analyze Trends' to view correlations",
+                    lines=4,
+                    interactive=False
+                )
+                
+                activity_rhr = gr.Textbox(
+                    label="Activity Type vs RHR Impact",
+                    value="Click 'Analyze Trends' to view activity analysis",
+                    lines=4,
+                    interactive=False
+                )
+        
+        # Trends analysis button
+        analyze_trends_button = gr.Button("Analyze Trends", variant="secondary")
+        
+        # AI Insights Section - Separate from factual data
+        gr.Markdown("## AI Health Coach Insights 🤖")
+        gr.Markdown("*AI-generated interpretations and recommendations based on your trend data*")
+        
+        with gr.Row():
+            with gr.Column():
+                ai_insights = gr.Textbox(
+                    label="Personalized Health Insights",
+                    value="Click 'Generate AI Insights' after analyzing trends to receive personalized recommendations",
+                    lines=8,
+                    interactive=False
+                )
+                
+            with gr.Column():
+                morning_report_display = gr.Textbox(
+                    label="Enhanced Morning Report",
+                    value="AI morning report will appear here after generating insights",
+                    lines=8,
+                    interactive=False
+                )
+        
+        # AI insights generation button
+        generate_insights_button = gr.Button("Generate AI Insights", variant="primary")
 
-        # Store state
-        agent_state = gr.State(HealthAgentState())
+        # Event handlers
+        def handle_sync():
+            status, data = sync_garmin_data()
+            return status, data if data else "No data to display yet"
 
-        init_button.click(
-            initialize_system,
-            inputs=[data_source_input, gr.State("documents"), city_input],  # Use actual documents folder
-            outputs=[system_status, chat_history, agent_state]
+        def handle_show_data():
+            return show_latest_data()
+        
+        def handle_analyze_trends():
+            """Analyze health trends using the trend analyzer."""
+            global current_user_id
+            
+            if current_user_id is None:
+                error_msg = "Please sync Garmin data first"
+                return error_msg, error_msg, error_msg, error_msg
+            
+            try:
+                import trend_analyzer
+                
+                # Get stress consistency analysis
+                stress_consistency_results = trend_analyzer.get_hourly_stress_consistency(current_user_id)
+                stress_consistency_text = "\n".join(stress_consistency_results)
+                
+                # Get recent stress patterns
+                recent_stress_results = trend_analyzer.get_recent_stress_patterns(current_user_id)
+                recent_stress_text = "\n".join(recent_stress_results)
+                
+                # Get steps vs sleep analysis
+                steps_sleep_results = trend_analyzer.get_steps_vs_sleep_effect(current_user_id)
+                steps_sleep_text = "\n".join(steps_sleep_results)
+                
+                # Get activity type vs RHR analysis
+                activity_rhr_results = trend_analyzer.get_activity_type_rhr_impact(current_user_id)
+                activity_rhr_text = "\n".join(activity_rhr_results)
+                
+                return stress_consistency_text, recent_stress_text, steps_sleep_text, activity_rhr_text
+                
+            except Exception as e:
+                error_msg = f"Error analyzing trends: {e}"
+                logger.error(error_msg)
+                return error_msg, error_msg, error_msg, error_msg
+        
+        def handle_generate_ai_insights():
+            """Generate AI insights and morning report using trend analysis and LLM."""
+            global current_user_id
+            
+            if current_user_id is None:
+                error_msg = "Please sync Garmin data first"
+                return error_msg, error_msg
+            
+            try:
+                # Get the latest health data from database
+                latest_data = database.get_latest_data(current_user_id, days=1)
+                
+                if not latest_data['daily_summaries']:
+                    return "No recent health data available for AI analysis", "No data for morning report"
+                
+                # Process the health data into the format expected by the agent
+                daily_summary = latest_data['daily_summaries'][0]
+                sleep_data = latest_data['sleep_data'][0] if latest_data['sleep_data'] else {}
+                
+                # Create health data in the format expected by the agent
+                processed_health_data = {
+                    'heart_rate': daily_summary.get('avg_daily_rhr', 0),
+                    'steps': daily_summary.get('total_steps', 0),
+                    'sleep_hours': sleep_data.get('total_sleep_minutes', 0) / 60 if sleep_data.get('total_sleep_minutes') else 0,
+                    'calories': daily_summary.get('active_calories', 0),
+                    'garmin_data': {
+                        'sleep_score': sleep_data.get('sleep_score', 0),
+                    },
+                    'stress_metrics': {
+                        'avg_stress': daily_summary.get('avg_daily_stress', 0),
+                        'stress_level': 'Moderate' if daily_summary.get('avg_daily_stress', 0) > 30 else 'Low'
+                    }
+                }
+                
+                # Create health agent state
+                state = HealthAgentState(health_data=processed_health_data)
+                
+                # Generate AI recommendations
+                state = generate_recommendations(state)
+                ai_recommendations = state.recommendations[-1].content if state.recommendations else "No recommendations generated"
+                
+                # Generate enhanced morning report
+                state = generate_morning_report(state)
+                morning_report = state.morning_report if state.morning_report else "No morning report generated"
+                
+                logger.info("AI insights generated successfully")
+                return ai_recommendations, morning_report
+                
+            except Exception as e:
+                error_msg = f"Error generating AI insights: {e}"
+                logger.error(error_msg)
+                return error_msg, error_msg
+
+        sync_button.click(
+            handle_sync,
+            inputs=[],
+            outputs=[sync_status, data_display]
         )
 
-        send_button.click(
-            chat_interact,
-            inputs=[user_message, chat_history, agent_state],
-            outputs=[user_message, chat_history, agent_state]
+        show_data_button.click(
+            handle_show_data,
+            inputs=[],
+            outputs=[data_display]
         )
-
-        user_message.submit(
-            chat_interact,
-            inputs=[user_message, chat_history, agent_state],
-            outputs=[user_message, chat_history, agent_state]
+        
+        analyze_trends_button.click(
+            handle_analyze_trends,
+            inputs=[],
+            outputs=[stress_consistency, recent_stress, steps_sleep, activity_rhr]
+        )
+        
+        generate_insights_button.click(
+            handle_generate_ai_insights,
+            inputs=[],
+            outputs=[ai_insights, morning_report_display]
         )
     
     demo.launch(inbrowser=True)
