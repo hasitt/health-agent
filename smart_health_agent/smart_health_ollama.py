@@ -829,20 +829,36 @@ def upload_cronometer_data(file) -> tuple[str, str]:
     """Handle Cronometer CSV file upload and processing."""
     global current_user_id
     
+    # Add detailed logging for debugging
+    logger.info(f"CSV upload called with file: {file}")
+    logger.info(f"File type: {type(file)}")
+    if hasattr(file, '__dict__'):
+        logger.info(f"File attributes: {file.__dict__}")
+    
     if current_user_id is None:
+        logger.warning("CSV upload attempted without user session")
         return "❌ Please sync Garmin data first to establish user session", ""
     
     # More robust file validation for Gradio
     if file is None:
+        logger.info("No file provided (None)")
         return "❌ No file selected. Please select a CSV file first.", ""
     
     # Check if file is a proper file object with read capability
     if not hasattr(file, 'read') and not hasattr(file, 'name'):
+        logger.warning(f"File object missing read/name attributes. Type: {type(file)}")
         return "❌ Invalid file object. Please select a valid CSV file.", ""
     
     # Handle case where file might be a string path or other object
     if isinstance(file, str):
+        logger.warning(f"File is a string: {file}")
         return "❌ Invalid file format. Please upload a CSV file directly.", ""
+    
+    # Log file details for debugging
+    if hasattr(file, 'name'):
+        logger.info(f"File name: {file.name}")
+    if hasattr(file, 'size'):
+        logger.info(f"File size: {file.size}")
     
     temp_file_path = None
     try:
@@ -852,14 +868,17 @@ def upload_cronometer_data(file) -> tuple[str, str]:
             
             # Handle different file object types
             if hasattr(file, 'read'):
+                logger.info("Processing file with read() method")
                 # File-like object
                 file.seek(0)  # Reset file pointer
                 shutil.copyfileobj(file, temp_file)
             elif hasattr(file, 'name') and os.path.exists(file.name):
+                logger.info(f"Processing file path: {file.name}")
                 # File path object
                 with open(file.name, 'rb') as source_file:
                     shutil.copyfileobj(source_file, temp_file)
             else:
+                logger.error(f"Cannot handle file type: {type(file)}, has_read: {hasattr(file, 'read')}, has_name: {hasattr(file, 'name')}")
                 return "❌ Cannot read the uploaded file. Please try again.", ""
         
         logger.info(f"Processing Cronometer CSV: {temp_file_path}")
@@ -869,6 +888,7 @@ def upload_cronometer_data(file) -> tuple[str, str]:
         
         if not validation_result['is_valid']:
             issues = "\n".join(validation_result['issues'])
+            logger.warning(f"CSV validation failed: {issues}")
             return f"❌ Invalid CSV file:\n{issues}", ""
         
         # Parse and import the CSV
@@ -1104,6 +1124,15 @@ def create_ui():
             return show_latest_data()
         
         def handle_cronometer_upload(file):
+            # Debug logging to understand what Gradio is passing
+            logger.info(f"=== CSV UPLOAD DEBUG ===")
+            logger.info(f"File object: {file}")
+            logger.info(f"File type: {type(file)}")
+            logger.info(f"File repr: {repr(file)}")
+            if file is not None:
+                logger.info(f"File dir: {dir(file)}")
+            logger.info(f"=== END DEBUG ===")
+            
             status, food_data = upload_cronometer_data(file)
             return status, food_data
         
