@@ -844,86 +844,121 @@ def upload_cronometer_data(file) -> tuple[str, str]:
         logger.info("No file provided (None)")
         return "❌ No file selected. Please select a CSV file first.", ""
     
-    # Check if file is a proper file object with read capability
-    if not hasattr(file, 'read') and not hasattr(file, 'name'):
-        logger.warning(f"File object missing read/name attributes. Type: {type(file)}")
-        return "❌ Invalid file object. Please select a valid CSV file.", ""
-    
-    # Handle case where file might be a string path or other object
-    if isinstance(file, str):
-        logger.warning(f"File is a string: {file}")
-        return "❌ Invalid file format. Please upload a CSV file directly.", ""
-    
-    # Log file details for debugging
-    if hasattr(file, 'name'):
-        logger.info(f"File name: {file.name}")
-    if hasattr(file, 'size'):
-        logger.info(f"File size: {file.size}")
-    
-    temp_file_path = None
-    try:
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
-            temp_file_path = temp_file.name
-            
-            # Handle different file object types
-            if hasattr(file, 'read'):
-                logger.info("Processing file with read() method")
-                # File-like object
-                file.seek(0)  # Reset file pointer
-                shutil.copyfileobj(file, temp_file)
-            elif hasattr(file, 'name') and os.path.exists(file.name):
-                logger.info(f"Processing file path: {file.name}")
-                # File path object
-                with open(file.name, 'rb') as source_file:
+    # Handle Gradio's NamedString objects (which are file paths)
+    if hasattr(file, 'name') and str(file).endswith('.csv'):
+        logger.info(f"Processing Gradio NamedString file: {file}")
+        temp_file_path = None
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
+                temp_file_path = temp_file.name
+                
+                # Copy from the Gradio temporary file
+                with open(str(file), 'rb') as source_file:
                     shutil.copyfileobj(source_file, temp_file)
-            else:
-                logger.error(f"Cannot handle file type: {type(file)}, has_read: {hasattr(file, 'read')}, has_name: {hasattr(file, 'name')}")
-                return "❌ Cannot read the uploaded file. Please try again.", ""
-        
-        logger.info(f"Processing Cronometer CSV: {temp_file_path}")
-        
-        # Validate CSV before processing
-        validation_result = cronometer_parser.validate_cronometer_csv(temp_file_path)
-        
-        if not validation_result['is_valid']:
-            issues = "\n".join(validation_result['issues'])
-            logger.warning(f"CSV validation failed: {issues}")
-            return f"❌ Invalid CSV file:\n{issues}", ""
-        
-        # Parse and import the CSV
-        import_summary = cronometer_parser.parse_cronometer_food_entries_csv(temp_file_path, current_user_id)
-        
-        # Format success message
-        status_msg = f"""✅ Cronometer data imported successfully!
-        
+            
+            logger.info(f"Processing Cronometer CSV: {temp_file_path}")
+            
+            # Validate CSV before processing
+            validation_result = cronometer_parser.validate_cronometer_csv(temp_file_path)
+            
+            if not validation_result['is_valid']:
+                issues = "\n".join(validation_result['issues'])
+                logger.warning(f"CSV validation failed: {issues}")
+                return f"❌ Invalid CSV file:\n{issues}", ""
+            
+            # Parse and import the CSV
+            import_summary = cronometer_parser.parse_cronometer_food_entries_csv(temp_file_path, current_user_id)
+            
+            # Format success message
+            status_msg = f"""✅ Cronometer data imported successfully!
+            
 📊 Import Summary:
 • Total rows processed: {import_summary['total_rows']}
 • Food entries imported: {import_summary['food_entries']}
 • Supplement entries imported: {import_summary['supplement_entries']}
 • Errors: {import_summary['errors']}"""
-        
-        if import_summary['error_details']:
-            status_msg += f"\n\n⚠️ Issues encountered:\n" + "\n".join(import_summary['error_details'][:5])
-        
-        # Get updated food log display
-        food_log_display = format_food_log_display(current_user_id)
-        
-        logger.info(f"Cronometer import completed: {import_summary}")
-        return status_msg, food_log_display
-        
-    except Exception as e:
-        error_msg = f"❌ Failed to process Cronometer CSV: {str(e)}"
-        logger.error(error_msg)
-        return error_msg, ""
-        
-    finally:
-        # Clean up temporary file
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+            
+            if import_summary['error_details']:
+                status_msg += f"\n\n⚠️ Issues encountered:\n" + "\n".join(import_summary['error_details'][:5])
+            
+            # Get updated food log display
+            food_log_display = format_food_log_display(current_user_id)
+            
+            logger.info(f"Cronometer import completed: {import_summary}")
+            return status_msg, food_log_display
+            
+        except Exception as e:
+            error_msg = f"❌ Failed to process Cronometer CSV: {str(e)}"
+            logger.error(error_msg)
+            return error_msg, ""
+            
+        finally:
+            # Clean up temporary file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+    
+    # Check if file is a proper file object with read capability
+    elif hasattr(file, 'read'):
+        logger.info("Processing file with read() method")
+        temp_file_path = None
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
+                temp_file_path = temp_file.name
+                file.seek(0)  # Reset file pointer
+                shutil.copyfileobj(file, temp_file)
+            
+            logger.info(f"Processing Cronometer CSV: {temp_file_path}")
+            
+            # Validate CSV before processing
+            validation_result = cronometer_parser.validate_cronometer_csv(temp_file_path)
+            
+            if not validation_result['is_valid']:
+                issues = "\n".join(validation_result['issues'])
+                logger.warning(f"CSV validation failed: {issues}")
+                return f"❌ Invalid CSV file:\n{issues}", ""
+            
+            # Parse and import the CSV
+            import_summary = cronometer_parser.parse_cronometer_food_entries_csv(temp_file_path, current_user_id)
+            
+            # Format success message
+            status_msg = f"""✅ Cronometer data imported successfully!
+            
+📊 Import Summary:
+• Total rows processed: {import_summary['total_rows']}
+• Food entries imported: {import_summary['food_entries']}
+• Supplement entries imported: {import_summary['supplement_entries']}
+• Errors: {import_summary['errors']}"""
+            
+            if import_summary['error_details']:
+                status_msg += f"\n\n⚠️ Issues encountered:\n" + "\n".join(import_summary['error_details'][:5])
+            
+            # Get updated food log display
+            food_log_display = format_food_log_display(current_user_id)
+            
+            logger.info(f"Cronometer import completed: {import_summary}")
+            return status_msg, food_log_display
+            
+        except Exception as e:
+            error_msg = f"❌ Failed to process Cronometer CSV: {str(e)}"
+            logger.error(error_msg)
+            return error_msg, ""
+            
+        finally:
+            # Clean up temporary file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+    
+    else:
+        logger.error(f"Cannot handle file type: {type(file)}, file: {file}")
+        return "❌ Invalid file format. Please select a valid CSV file.", ""
 
 def show_food_log() -> str:
     """Show the current food log data."""
