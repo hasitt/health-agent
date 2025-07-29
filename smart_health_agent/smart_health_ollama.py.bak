@@ -1,0 +1,848 @@
+"""
+Smart Health Agent - Complete Application with Full Tabbed Interface
+Comprehensive health analysis with Garmin integration, mood tracking, and custom correlations.
+"""
+
+import os
+import json
+import gradio as gr
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta, date
+from typing import List, Dict, Any, Optional, Tuple
+import logging
+from pathlib import Path
+
+# Core imports
+from config import Config, get_logger
+import database
+import garmin_utils
+import cronometer_parser
+import trend_analyzer
+import mood_tracking
+import health_visualizations
+
+# LLM integration
+from langchain_ollama import OllamaLLM
+from langchain.prompts import PromptTemplate
+
+# Initialize logging
+logger = get_logger('health_agent')
+ui_logger = get_logger('ui')
+
+# Global LLM instance
+llm = OllamaLLM(
+    model=Config.OLLAMA_MODEL,
+    temperature=Config.OLLAMA_TEMPERATURE,
+    base_url=Config.OLLAMA_HOST
+)
+
+# Global state for active filters
+ACTIVE_FILTERS_STATE = []
+
+###############################################################################
+# INITIALIZATION & SETUP
+###############################################################################
+
+def initialize_database():
+    """Initialize database tables and ensure data directory exists."""
+    try:
+        database.ensure_data_directory()
+        database.create_tables()
+        logger.info("Database initialized successfully")
+        return "✅ Database initialized"
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        return f"❌ Database error: {str(e)}"
+
+def sync_garmin_data_background():
+    """Background sync of Garmin data."""
+    try:
+        # Create Garmin client first
+        garmin_client = garmin_utils.GarminHealthData()
+        if hasattr(garmin_utils, 'start_hybrid_sync'):
+            result = garmin_utils.start_hybrid_sync(user_id=1, garmin_client=garmin_client)
+            logger.info("Garmin sync completed")
+            return f"✅ Garmin sync: {result}"
+        else:
+            logger.warning("Garmin sync not available")
+            return "⚠️ Garmin sync not configured"
+    except Exception as e:
+        logger.error(f"Garmin sync failed: {e}")
+        return f"❌ Garmin sync error: {str(e)}"
+
+###############################################################################
+# DASHBOARD TAB FUNCTIONS
+###############################################################################
+
+def generate_morning_report(user_id: int = 1) -> str:
+    """Generate concise morning report with yesterday's data."""
+    try:
+        yesterday = datetime.now().date() - timedelta(days=1)
+        
+        # Get yesterday's summary data
+        with database.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Daily summary data - using correct column names from schema
+            cursor.execute("""
+                SELECT total_steps, avg_daily_stress, distance_km,
+                       active_calories, avg_daily_rhr
+                FROM garmin_daily_summary 
+                WHERE user_id = ? AND date = ?
+            """, (user_id, yesterday))
+            
+            daily_data = cursor.fetchone()
+            
+            # Sleep data - using correct column names
+            cursor.execute("""
+                SELECT deep_sleep_minutes, light_sleep_minutes,
+                       rem_sleep_minutes, total_sleep_minutes, sleep_score
+                FROM garmin_sleep 
+                WHERE user_id = ? AND date = ?
+            """, (user_id, yesterday))
+            
+            sleep_data = cursor.fetchone()
+            
+            # Mood data
+            cursor.execute("""
+                SELECT mood_rating, energy_rating, stress_rating
+                FROM subjective_wellbeing 
+                WHERE user_id = ? AND date = ?
+            """, (user_id, yesterday))
+            
+            mood_data = cursor.fetchone()
+
+        report_parts = [f"📅 **Morning Report for {yesterday.strftime('%B %d, %Y')}**\n"]
+        
+        if daily_data:
+            if daily_data[0]:
+                report_parts.append(f"👟 **Steps:** {daily_data[0]:,} steps")
+            if daily_data[1]:
+                report_parts.append(f"😰 **Avg Stress:** {daily_data[1]}/100")
+            if daily_data[3]:
+                report_parts.append(f"🏃 **Active Calories:** {daily_data[3]:,}")
+            if daily_data[2]:
+                report_parts.append(f"📏 **Distance:** {daily_data[2]:.1f} km")
+            if daily_data[4]:
+                report_parts.append(f"❤️ **Resting HR:** {daily_data[4]} bpm")
+        
+        if sleep_data and sleep_data[3]:
+            total_hours = sleep_data[3] / 60
+            report_parts.append(f"🛌 **Total Sleep:** {total_hours:.1f} hours")
+            if sleep_data[0]:
+                deep_hours = sleep_data[0] / 60
+                report_parts.append(f"🌙 **Deep Sleep:** {deep_hours:.1f} hours")
+            if sleep_data[4]:
+                report_parts.append(f"😴 **Sleep Score:** {sleep_data[4]}/100")
+        
+        if mood_data:
+            if mood_data[0]:
+                report_parts.append(f"😊 **Mood:** {mood_data[0]}/10")
+            if mood_data[1]:
+                report_parts.append(f"⚡ **Energy:** {mood_data[1]}/10")
+        
+        if len(report_parts) == 1:
+            report_parts.append("No data available for yesterday.")
+        
+        return "\n".join(report_parts)
+        
+    except Exception as e:
+        logger.error(f"Error generating morning report: {e}")
+        return f"❌ Error generating morning report: {str(e)}"
+
+def get_recent_trends(user_id: int = 1) -> str:
+    """Get recent health trends summary."""
+    try:
+        # Use available trend analysis functions
+        if hasattr(trend_analyzer, 'get_daily_summary_trends'):
+            trends = trend_analyzer.get_daily_summary_trends(user_id, days=7)
+            return trends if trends else "No recent trends available."
+        else:
+            # Fallback to basic trend information
+            with database.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT AVG(total_steps), AVG(avg_daily_stress)
+                    FROM garmin_daily_summary 
+                    WHERE user_id = ? AND date >= date('now', '-7 days')
+                """, (user_id,))
+                
+                avg_data = cursor.fetchone()
+                if avg_data and avg_data[0]:
+                    return f"📊 **7-day averages:**\n👟 Steps: {avg_data[0]:,.0f}\n😰 Stress: {avg_data[1]:.1f}/100"
+                else:
+                    return "No recent data available for trends."
+    except Exception as e:
+        logger.error(f"Error getting trends: {e}")
+        return f"❌ Error: {str(e)}"
+
+###############################################################################
+# GRAPHS TAB FUNCTIONS
+###############################################################################
+
+def generate_daily_metrics_plot(user_id: int = 1, days: int = 30):
+    """Generate daily metrics visualization."""
+    try:
+        plots = health_visualizations.plot_time_series_metrics(user_id, days)
+        if plots and 'daily_metrics' in plots:
+            # Convert base64 to matplotlib figure for Gradio
+            import io
+            import base64
+            from PIL import Image
+            
+            # Decode base64 image
+            img_data = plots['daily_metrics'].split(',')[1]
+            img_bytes = base64.b64decode(img_data)
+            img = Image.open(io.BytesIO(img_bytes))
+            
+            # Convert to matplotlib figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            ax.imshow(img)
+            ax.axis('off')
+            
+            return fig
+        else:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, 'No data available for plotting', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Daily Metrics')
+            return fig
+    except Exception as e:
+        logger.error(f"Error generating daily metrics plot: {e}")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f'Error: {str(e)}', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Daily Metrics - Error')
+        return fig
+
+def generate_stress_patterns_plot(user_id: int = 1):
+    """Generate hourly stress patterns visualization."""
+    try:
+        # Check if the function exists, otherwise create a fallback
+        if hasattr(health_visualizations, 'plot_hourly_stress_patterns'):
+            plots = health_visualizations.plot_hourly_stress_patterns(user_id)
+            if plots and 'hourly_stress' in plots:
+                # Similar conversion as above
+                import io
+                import base64
+                from PIL import Image
+                
+                img_data = plots['hourly_stress'].split(',')[1]
+                img_bytes = base64.b64decode(img_data)
+                img = Image.open(io.BytesIO(img_bytes))
+                
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax.imshow(img)
+                ax.axis('off')
+                
+                return fig
+            else:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, 'No stress data available', 
+                       ha='center', va='center', transform=ax.transAxes)
+                ax.set_title('Hourly Stress Patterns')
+                return fig
+        else:
+            # Create simple stress pattern plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Get stress data from database
+            with database.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT AVG(avg_daily_stress) as avg_stress
+                    FROM garmin_daily_summary 
+                    WHERE user_id = ? AND date >= date('now', '-7 days')
+                    AND avg_daily_stress IS NOT NULL
+                """, (user_id,))
+                
+                result = cursor.fetchone()
+                if result and result[0]:
+                    ax.bar(['Average Stress (7 days)'], [result[0]])
+                    ax.set_ylabel('Stress Level')
+                    ax.set_title('Recent Stress Summary')
+                    ax.set_ylim(0, 100)
+                else:
+                    ax.text(0.5, 0.5, 'No stress data available', 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title('Stress Patterns - No Data')
+            
+            return fig
+    except Exception as e:
+        logger.error(f"Error generating stress patterns: {e}")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f'Error: {str(e)}', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Stress Patterns - Error')
+        return fig
+
+###############################################################################
+# DAILY MOOD TRACKER TAB FUNCTIONS
+###############################################################################
+
+def submit_mood_entry(mood_rating, energy_rating, stress_rating, anxiety_rating,
+                     sleep_quality_rating, focus_rating, motivation_rating,
+                     physical_symptoms, emotional_state, stress_triggers,
+                     coping_strategies, daily_events, social_interactions):
+    """Submit daily mood tracking entry."""
+    try:
+        mood_data = {
+            'date': datetime.now().date(),
+            'timestamp': datetime.now(),
+            'mood_rating': mood_rating,
+            'energy_rating': energy_rating,
+            'stress_rating': stress_rating,
+            'anxiety_rating': anxiety_rating,
+            'sleep_quality_rating': sleep_quality_rating,
+            'focus_rating': focus_rating,
+            'motivation_rating': motivation_rating,
+            'physical_symptoms': physical_symptoms,
+            'emotional_state': emotional_state,
+            'stress_triggers': stress_triggers,
+            'coping_strategies': coping_strategies,
+            'daily_events': daily_events,
+            'social_interactions': social_interactions,
+            'entry_type': 'daily',
+            'source': 'manual'
+        }
+        
+        mood_tracking.insert_daily_mood_entry(user_id=1, mood_data=mood_data)
+        return "✅ Mood entry saved successfully!"
+        
+    except Exception as e:
+        logger.error(f"Error saving mood entry: {e}")
+        return f"❌ Error saving mood entry: {str(e)}"
+
+###############################################################################
+# CUSTOM ANALYSIS TAB FUNCTIONS
+###############################################################################
+
+# Available metrics for analysis - updated with correct column names
+AVAILABLE_METRICS = [
+    "total_steps", "avg_daily_stress", "distance_km", "active_calories", 
+    "resting_calories", "avg_daily_rhr", "max_daily_stress", "min_daily_stress",
+    "total_sleep_minutes", "deep_sleep_minutes", "light_sleep_minutes", 
+    "rem_sleep_minutes", "sleep_score", "awake_minutes",
+    "total_calories", "protein_g", "carbohydrates_g", "fat_g", 
+    "caffeine_mg", "alcohol_units", "mood_rating", "energy_rating",
+    "stress_rating", "anxiety_rating", "sleep_quality_rating",
+    "focus_rating", "motivation_rating"
+]
+
+FILTER_OPERATORS = [">=", "<=", "==", "!=", ">", "<"]
+
+def render_active_filters_ui(active_filters: List[Dict]) -> gr.Column:
+    """Render the active filters display without individual X buttons."""
+    try:
+        if not active_filters:
+            return gr.Column([
+                gr.Markdown("*No active filters*", visible=True)
+            ], visible=True)
+        
+        filter_rows = []
+        for i, filter_dict in enumerate(active_filters):
+            metric = filter_dict.get('metric', 'Unknown')
+            operator = filter_dict.get('operator', '==')
+            value = filter_dict.get('value', 'Unknown')
+            
+            filter_text = f"**{metric}** {operator} {value}"
+            filter_rows.append(gr.Markdown(filter_text, visible=True))
+        
+        return gr.Column(filter_rows, visible=True)
+        
+    except Exception as e:
+        logger.error(f"Error rendering filters UI: {e}")
+        return gr.Column([
+            gr.Markdown(f"Error rendering filters: {str(e)}", visible=True)
+        ], visible=True)
+
+def add_filter_logic(filter_metric, filter_operator, filter_value, active_filters):
+    """Add a new filter to the active filters list."""
+    global ACTIVE_FILTERS_STATE
+    
+    try:
+        # Validation
+        if not filter_metric or not filter_operator or not filter_value:
+            return active_filters, render_active_filters_ui(active_filters), "❌ Please fill in all filter fields"
+        
+        # Convert value to appropriate type
+        try:
+            if filter_metric in ['mood_rating', 'energy_rating', 'stress_rating', 'anxiety_rating',
+                               'sleep_quality_rating', 'focus_rating', 'motivation_rating']:
+                filter_value = int(filter_value)
+            else:
+                filter_value = float(filter_value)
+        except ValueError:
+            return active_filters, render_active_filters_ui(active_filters), "❌ Invalid filter value"
+        
+        # Check for duplicates
+        new_filter = {
+            'metric': filter_metric,
+            'operator': filter_operator,
+            'value': filter_value
+        }
+        
+        for existing_filter in active_filters:
+            if (existing_filter.get('metric') == filter_metric and 
+                existing_filter.get('operator') == filter_operator):
+                return active_filters, render_active_filters_ui(active_filters), "❌ Similar filter already exists"
+        
+        # Add new filter
+        updated_filters = active_filters + [new_filter]
+        ACTIVE_FILTERS_STATE = updated_filters
+        
+        return updated_filters, render_active_filters_ui(updated_filters), f"✅ Filter added: {filter_metric} {filter_operator} {filter_value}"
+        
+    except Exception as e:
+        logger.error(f"Error adding filter: {e}")
+        return active_filters, render_active_filters_ui(active_filters), f"❌ Error adding filter: {str(e)}"
+
+def clear_all_filters(active_filters):
+    """Clear all active filters."""
+    global ACTIVE_FILTERS_STATE
+    
+    try:
+        ACTIVE_FILTERS_STATE = []
+        empty_filters = []
+        return empty_filters, render_active_filters_ui(empty_filters), "✅ All filters cleared"
+        
+    except Exception as e:
+        logger.error(f"Error clearing filters: {e}")
+        return active_filters, render_active_filters_ui(active_filters), f"❌ Error clearing filters: {str(e)}"
+
+def perform_custom_analysis(x_metric, y_metric, analysis_type, start_date, end_date, active_filters):
+    """Perform custom correlation analysis with filters."""
+    try:
+        # Validation
+        if not x_metric or not y_metric:
+            return "❌ Please select both X and Y metrics", None
+        
+        if x_metric == y_metric:
+            return "❌ X and Y metrics must be different", None
+        
+        # Convert dates
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # Prepare filters for trend analyzer
+        filters_dict = {}
+        for filter_item in active_filters:
+            metric = filter_item.get('metric')
+            operator = filter_item.get('operator')
+            value = filter_item.get('value')
+            
+            if metric and operator and value is not None:
+                filters_dict[metric] = {
+                    'operator': operator,
+                    'value': value
+                }
+        
+        # Call trend analyzer
+        result = trend_analyzer.analyze_custom_correlation(
+            user_id=1,
+            x_metric=x_metric,
+            y_metric=y_metric,
+            analysis_type=analysis_type,
+            start_date=start_date,
+            end_date=end_date,
+            filters=filters_dict
+        )
+        
+        if not result:
+            return "❌ No data available for analysis", None
+        
+        # Extract results
+        analysis_text = result.get('analysis', 'No analysis available')
+        plot_data = result.get('plot_data')
+        
+        # Generate plot
+        fig = None
+        if plot_data and len(plot_data) > 0:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            if analysis_type == "Pearson Correlation":
+                # Scatter plot
+                ax.scatter(plot_data[x_metric], plot_data[y_metric], alpha=0.6)
+                ax.set_xlabel(x_metric.replace('_', ' ').title())
+                ax.set_ylabel(y_metric.replace('_', ' ').title())
+                ax.set_title(f'{x_metric} vs {y_metric} - Pearson Correlation')
+                
+                # Add trend line
+                if len(plot_data) > 1:
+                    z = np.polyfit(plot_data[x_metric], plot_data[y_metric], 1)
+                    p = np.poly1d(z)
+                    ax.plot(plot_data[x_metric], p(plot_data[x_metric]), "r--", alpha=0.8)
+                    
+            elif analysis_type == "Average Comparison":
+                # Bar plot
+                grouped_data = plot_data.groupby(pd.cut(plot_data[x_metric], bins=5))[y_metric].mean()
+                ax.bar(range(len(grouped_data)), grouped_data.values)
+                ax.set_xlabel(f'{x_metric} (binned)')
+                ax.set_ylabel(f'Average {y_metric}')
+                ax.set_title(f'Average {y_metric} by {x_metric} ranges')
+                
+            elif analysis_type == "Time-Based Impact":
+                # Time series plot
+                if 'date' in plot_data.columns:
+                    ax.plot(plot_data['date'], plot_data[x_metric], label=x_metric, alpha=0.7)
+                    ax2 = ax.twinx()
+                    ax2.plot(plot_data['date'], plot_data[y_metric], label=y_metric, color='red', alpha=0.7)
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel(x_metric)
+                    ax2.set_ylabel(y_metric)
+                    ax.legend(loc='upper left')
+                    ax2.legend(loc='upper right')
+                    ax.set_title(f'{x_metric} and {y_metric} over time')
+                else:
+                    ax.text(0.5, 0.5, 'Date information not available for time-based analysis', 
+                           ha='center', va='center', transform=ax.transAxes)
+            
+            plt.tight_layout()
+        else:
+            # No data plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, 'No data available for visualization', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('No Data Available')
+        
+        return analysis_text, fig
+        
+    except Exception as e:
+        logger.error(f"Error in custom analysis: {e}")
+        return f"❌ Analysis error: {str(e)}", None
+
+###############################################################################
+# FILE UPLOAD FUNCTIONS
+###############################################################################
+
+def process_cronometer_upload(file_path):
+    """Process uploaded Cronometer CSV file."""
+    try:
+        if not file_path:
+            return "❌ No file uploaded"
+        
+        result = cronometer_parser.parse_cronometer_csv(
+            csv_path=file_path,
+            user_id=1
+        )
+        
+        if result:
+            return f"✅ Cronometer data imported successfully: {result}"
+        else:
+            return "❌ Failed to import Cronometer data"
+            
+    except Exception as e:
+        logger.error(f"Error processing Cronometer upload: {e}")
+        return f"❌ Upload error: {str(e)}"
+
+###############################################################################
+# MAIN GRADIO INTERFACE
+###############################################################################
+
+def create_main_interface():
+    """Create the complete tabbed Gradio interface."""
+    
+    # Initialize on startup
+    init_status = initialize_database()
+    garmin_status = sync_garmin_data_background()
+    
+    with gr.Blocks(title="Smart Health Agent", theme=gr.themes.Soft()) as demo:
+        
+        # Header
+        gr.Markdown("# 🩺 Smart Health Agent")
+        gr.Markdown("**Enhanced Version**: Complete health analysis with tabbed interface")
+        
+        # Status display
+        with gr.Row():
+            gr.Markdown(f"**Status:** {init_status} | {garmin_status}")
+        
+        # Main tabbed interface
+        with gr.Tabs():
+            
+            # TAB 1: DASHBOARD
+            with gr.Tab("📊 Dashboard"):
+                gr.Markdown("## Morning Report & Health Overview")
+                
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        morning_report_output = gr.Markdown(
+                            value=generate_morning_report(),
+                            label="Morning Report"
+                        )
+                        
+                        refresh_report_btn = gr.Button("🔄 Refresh Morning Report", variant="primary")
+                        
+                    with gr.Column(scale=1):
+                        trends_output = gr.Markdown(
+                            value=get_recent_trends(),
+                            label="Recent Trends"
+                        )
+                        
+                        refresh_trends_btn = gr.Button("🔄 Refresh Trends")
+                
+                # Garmin sync section
+                gr.Markdown("### 📱 Data Sync")
+                with gr.Row():
+                    sync_garmin_btn = gr.Button("🔄 Sync Garmin Data", variant="secondary")
+                    sync_status = gr.Textbox(label="Sync Status", interactive=False)
+                
+                # Cronometer upload section
+                gr.Markdown("### 📊 Upload Nutrition Data")
+                with gr.Row():
+                    cronometer_file = gr.File(
+                        label="Upload Cronometer CSV",
+                        file_types=[".csv"]
+                    )
+                    upload_status = gr.Textbox(label="Upload Status", interactive=False)
+                
+                # Wire up dashboard events
+                refresh_report_btn.click(
+                    fn=generate_morning_report,
+                    outputs=morning_report_output
+                )
+                
+                refresh_trends_btn.click(
+                    fn=get_recent_trends,
+                    outputs=trends_output
+                )
+                
+                sync_garmin_btn.click(
+                    fn=sync_garmin_data_background,
+                    outputs=sync_status
+                )
+                
+                cronometer_file.upload(
+                    fn=process_cronometer_upload,
+                    inputs=cronometer_file,
+                    outputs=upload_status
+                )
+            
+            # TAB 2: GRAPHS
+            with gr.Tab("📈 Graphs"):
+                gr.Markdown("## Health Data Visualizations")
+                
+                with gr.Row():
+                    days_slider = gr.Slider(
+                        minimum=7,
+                        maximum=90,
+                        value=30,
+                        step=1,
+                        label="Days to Display"
+                    )
+                    
+                    refresh_graphs_btn = gr.Button("🔄 Refresh Graphs", variant="primary")
+                
+                with gr.Row():
+                    with gr.Column():
+                        daily_metrics_plot = gr.Plot(
+                            value=generate_daily_metrics_plot(),
+                            label="Daily Metrics"
+                        )
+                    
+                    with gr.Column():
+                        stress_patterns_plot = gr.Plot(
+                            value=generate_stress_patterns_plot(),
+                            label="Stress Patterns"
+                        )
+                
+                # Wire up graphs events
+                refresh_graphs_btn.click(
+                    fn=generate_daily_metrics_plot,
+                    inputs=days_slider,
+                    outputs=daily_metrics_plot
+                )
+                
+                refresh_graphs_btn.click(
+                    fn=generate_stress_patterns_plot,
+                    outputs=stress_patterns_plot
+                )
+            
+            # TAB 3: DAILY MOOD TRACKER
+            with gr.Tab("😊 Daily Mood Tracker"):
+                gr.Markdown("## Daily Mood & Wellbeing Entry")
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📊 Rating Scales (1-10)")
+                        mood_rating = gr.Slider(1, 10, value=5, step=1, label="😊 Mood Rating")
+                        energy_rating = gr.Slider(1, 10, value=5, step=1, label="⚡ Energy Rating")
+                        stress_rating = gr.Slider(1, 10, value=5, step=1, label="😰 Stress Rating")
+                        anxiety_rating = gr.Slider(1, 10, value=5, step=1, label="😟 Anxiety Rating")
+                        sleep_quality_rating = gr.Slider(1, 10, value=5, step=1, label="😴 Sleep Quality Rating")
+                        focus_rating = gr.Slider(1, 10, value=5, step=1, label="🎯 Focus Rating")
+                        motivation_rating = gr.Slider(1, 10, value=5, step=1, label="🚀 Motivation Rating")
+                    
+                    with gr.Column():
+                        gr.Markdown("### 📝 Text Entries")
+                        physical_symptoms = gr.Textbox(
+                            label="Physical Symptoms",
+                            placeholder="Any physical symptoms experienced today..."
+                        )
+                        emotional_state = gr.Textbox(
+                            label="Emotional State",
+                            placeholder="Describe your emotional state..."
+                        )
+                        stress_triggers = gr.Textbox(
+                            label="Stress Triggers",
+                            placeholder="What caused stress today..."
+                        )
+                        coping_strategies = gr.Textbox(
+                            label="Coping Strategies",
+                            placeholder="How did you cope with stress..."
+                        )
+                        daily_events = gr.Textbox(
+                            label="Daily Events",
+                            placeholder="Notable events that happened today..."
+                        )
+                        social_interactions = gr.Textbox(
+                            label="Social Interactions",
+                            placeholder="Social activities and interactions..."
+                        )
+                
+                submit_mood_btn = gr.Button("💾 Submit Mood Entry", variant="primary")
+                mood_status = gr.Textbox(label="Status", interactive=False)
+                
+                # Wire up mood tracker events
+                submit_mood_btn.click(
+                    fn=submit_mood_entry,
+                    inputs=[
+                        mood_rating, energy_rating, stress_rating, anxiety_rating,
+                        sleep_quality_rating, focus_rating, motivation_rating,
+                        physical_symptoms, emotional_state, stress_triggers,
+                        coping_strategies, daily_events, social_interactions
+                    ],
+                    outputs=mood_status
+                )
+            
+            # TAB 4: CUSTOM ANALYSIS
+            with gr.Tab("🔬 Custom Analysis"):
+                gr.Markdown("## Custom Correlation Analysis with Filters")
+                
+                # Analysis parameters
+                with gr.Row():
+                    with gr.Column():
+                        x_metric = gr.Dropdown(
+                            choices=AVAILABLE_METRICS,
+                            label="X Metric",
+                            value="total_steps"
+                        )
+                        y_metric = gr.Dropdown(
+                            choices=AVAILABLE_METRICS,
+                            label="Y Metric", 
+                            value="avg_daily_stress"
+                        )
+                    
+                    with gr.Column():
+                        analysis_type = gr.Dropdown(
+                            choices=["Pearson Correlation", "Average Comparison", "Time-Based Impact"],
+                            label="Analysis Type",
+                            value="Pearson Correlation"
+                        )
+                        
+                        with gr.Row():
+                            start_date = gr.Textbox(
+                                label="Start Date (YYYY-MM-DD)",
+                                value=(datetime.now() - timedelta(days=30)).date().strftime('%Y-%m-%d')
+                            )
+                            end_date = gr.Textbox(
+                                label="End Date (YYYY-MM-DD)",
+                                value=datetime.now().date().strftime('%Y-%m-%d')
+                            )
+                
+                # Filters section
+                gr.Markdown("### 🔧 Filters")
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("**Add New Filter:**")
+                        filter_metric = gr.Dropdown(
+                            choices=AVAILABLE_METRICS,
+                            label="Filter Metric"
+                        )
+                        filter_operator = gr.Dropdown(
+                            choices=FILTER_OPERATORS,
+                            label="Operator",
+                            value=">="
+                        )
+                        filter_value = gr.Number(
+                            label="Value",
+                            value=0
+                        )
+                        
+                        with gr.Row():
+                            add_filter_btn = gr.Button("➕ Add Filter", variant="secondary")
+                            clear_filters_btn = gr.Button("🗑️ Clear All Filters", variant="secondary")
+                    
+                    with gr.Column():
+                        gr.Markdown("**Active Filters:**")
+                        active_filters_display = gr.Column([
+                            gr.Markdown("*No active filters*", visible=True)
+                        ], visible=True)
+                
+                # Hidden state for filters
+                active_filters_state = gr.State([])
+                filter_status = gr.Textbox(label="Filter Status", interactive=False)
+                
+                # Analysis section
+                gr.Markdown("### 📊 Analysis")
+                analyze_btn = gr.Button("🔍 Analyze Correlation", variant="primary")
+                
+                with gr.Row():
+                    with gr.Column():
+                        analysis_results = gr.Textbox(
+                            label="Analysis Results",
+                            lines=10,
+                            interactive=False
+                        )
+                    
+                    with gr.Column():
+                        correlation_plot = gr.Plot(label="Correlation Visualization")
+                
+                # Wire up custom analysis events
+                add_filter_btn.click(
+                    fn=add_filter_logic,
+                    inputs=[filter_metric, filter_operator, filter_value, active_filters_state],
+                    outputs=[active_filters_state, active_filters_display, filter_status]
+                )
+                
+                clear_filters_btn.click(
+                    fn=clear_all_filters,
+                    inputs=[active_filters_state],
+                    outputs=[active_filters_state, active_filters_display, filter_status]
+                )
+                
+                analyze_btn.click(
+                    fn=perform_custom_analysis,
+                    inputs=[x_metric, y_metric, analysis_type, start_date, end_date, active_filters_state],
+                    outputs=[analysis_results, correlation_plot]
+                )
+    
+    return demo
+
+###############################################################################
+# MAIN EXECUTION
+###############################################################################
+
+if __name__ == "__main__":
+    logger.info("Starting Smart Health Agent with full tabbed interface...")
+    
+    try:
+        # Create and launch the interface
+        demo = create_main_interface()
+        
+        # Launch with a different port to avoid conflicts
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=7861,  # Changed from 7860 to avoid port conflict
+            share=False,
+            debug=True,
+            show_error=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        print(f"❌ Error starting Smart Health Agent: {str(e)}") 
