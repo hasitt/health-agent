@@ -39,24 +39,46 @@ ALCOHOL_LOOKUP = {
 def estimate_caffeine(item_name, amount, units):
     """Estimates caffeine in mg based on item name, amount, and units."""
     item_name_lower = item_name.lower()
+    units_lower = units.lower() if units else ''
+    
     for key, caffeine_per_serving in CAFFEINE_LOOKUP.items():
         if key in item_name_lower:
-            # Simple estimation: assume 1 unit of 'cup', 'can', 'oz' corresponds to lookup
-            # This is a simplification and would need more robust unit conversion for accuracy
-            if 'cup' in units.lower() or 'cups' in units.lower():
-                return caffeine_per_serving * amount
-            elif 'ml' in units.lower():
+            # More conservative and realistic caffeine estimation
+            if 'cup' in units_lower or 'cups' in units_lower:
+                # Standard coffee/tea cup serving
+                return caffeine_per_serving * min(amount, 10)  # Cap at 10 cups max
+            elif 'ml' in units_lower:
                 # Rough conversion: assume 8oz = 240ml for coffee/tea
-                return (caffeine_per_serving / 240) * amount
-            elif 'oz' in units.lower():
-                # Rough conversion: assume 8oz = 226g for coffee/tea
-                return (caffeine_per_serving / 8) * amount
-            elif 'can' in units.lower() or 'cans' in units.lower():
-                return caffeine_per_serving * amount
-            elif 'shot' in units.lower() or 'shots' in units.lower():
-                return caffeine_per_serving * amount
-            # If no specific unit match, return based on a single serving
-            return caffeine_per_serving * amount # Assume 'amount' is number of servings
+                return (caffeine_per_serving / 240) * min(amount, 2400)  # Cap at 2.4L max
+            elif 'oz' in units_lower:
+                # Fluid ounces for beverages
+                return (caffeine_per_serving / 8) * min(amount, 80)  # Cap at 80oz max
+            elif 'can' in units_lower or 'cans' in units_lower:
+                return caffeine_per_serving * min(amount, 10)  # Cap at 10 cans max
+            elif 'shot' in units_lower or 'shots' in units_lower:
+                return caffeine_per_serving * min(amount, 20)  # Cap at 20 shots max
+            elif 'g' in units_lower or 'gram' in units_lower:
+                # For solid items like chocolate, use weight-based calculation
+                if 'chocolate' in key:
+                    # Caffeine per gram for chocolate items
+                    return (caffeine_per_serving / 28) * min(amount, 500)  # Cap at 500g max
+                else:
+                    # For coffee beans/grounds, much lower caffeine extraction
+                    # Most people don't consume raw coffee - this is likely a logging error
+                    # Use very conservative estimate: ~1mg per gram maximum
+                    return min(amount, 200)  # Cap at 200mg total for any gram-based coffee entry
+            elif 'each' in units_lower or amount <= 5:
+                # Individual items (like pieces of chocolate, single servings)
+                return caffeine_per_serving * min(amount, 5)  # Cap at 5 items max
+            else:
+                # If no specific unit match and amount seems reasonable, treat as servings
+                if amount <= 5:  # Reasonable number of servings
+                    return caffeine_per_serving * amount
+                else:
+                    # Amount seems too high, likely a weight/volume measurement without proper units
+                    # Return a conservative single serving estimate
+                    logger.warning(f"Large amount ({amount}) for caffeine item '{item_name}' with units '{units}'. Using single serving estimate.")
+                    return caffeine_per_serving
     return 0.0
 
 def estimate_alcohol_units(item_name, amount, units):
@@ -155,7 +177,7 @@ def parse_cronometer_food_entries_csv(file_path, user_id):
                     units = row.get(actual_header_lookup.get('Units'), '').strip() # Use .get for optional header
                     category = row.get(actual_header_lookup.get('Category', 'Category'), '').strip() # Use .get for optional header
 
-                    # Extract numeric amount from strings that may contain units (e.g., "300.00 g", "2.00 each")
+                    # Extract numeric amount and units from strings that may contain units (e.g., "300.00 g", "2.00 each")
                     # Use regex to find the first sequence of numbers (integers or floats)
                     amount_match = re.search(r'(\d+\.?\d*)', amount_str_raw)
                     if amount_match:
@@ -164,12 +186,23 @@ def parse_cronometer_food_entries_csv(file_path, user_id):
                         amount = 0.0 # Default to 0 if no number found
                         logger.warning(f"Could not extract numeric amount from '{amount_str_raw}'. Defaulting to 0.0.")
 
-                    # If no Units column exists, try to extract unit info from Amount column for estimation
+                    # If no Units column exists or units is empty, try to extract unit info from Amount column
                     if not units and amount_str_raw:
-                        # Use the original amount string for unit detection in estimation functions
-                        units_for_estimation = amount_str_raw
-                    else:
-                        units_for_estimation = units
+                        # Extract units from the amount string using regex
+                        # Look for common unit patterns after the number
+                        unit_match = re.search(r'\d+\.?\d*\s*([a-zA-Z]+)', amount_str_raw)
+                        if unit_match:
+                            units = unit_match.group(1).strip()
+                        else:
+                            # If no unit found, check for common patterns
+                            if 'cup' in amount_str_raw.lower(): units = 'cup'
+                            elif 'ml' in amount_str_raw.lower(): units = 'ml'
+                            elif 'oz' in amount_str_raw.lower(): units = 'oz'
+                            elif 'gram' in amount_str_raw.lower() or 'g' in amount_str_raw.lower(): units = 'g'
+                            elif 'each' in amount_str_raw.lower(): units = 'each'
+                            else: units = ''
+                    
+                    units_for_estimation = units
 
                     # Convert numerical fields, handling empty strings or non-numeric values
                     calories = float(row.get(actual_header_lookup['Calories'], '0').strip() or '0')

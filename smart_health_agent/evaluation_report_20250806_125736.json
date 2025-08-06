@@ -1,0 +1,287 @@
+{
+  "summary": {
+    "total_tests": 10,
+    "passed": 0,
+    "failed": 10,
+    "success_rate": "0.0%",
+    "avg_execution_time": "11.73s"
+  },
+  "category_breakdown": {
+    "data_availability": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "data_accuracy": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "visualization_failure": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "context_handling": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "date_calculations": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "statistical_analysis": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "comprehensive_analysis": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "trend_analysis": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "plot_generation": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "recent_data_handling": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    }
+  },
+  "most_common_errors": [
+    [
+      "Expected tool 'get_health_data_summary' was not called",
+      8
+    ],
+    [
+      "Expected tool 'generate_time_series_plots' was not called",
+      2
+    ],
+    [
+      "No plot was generated despite request",
+      1
+    ],
+    [
+      "Expected tool 'perform_custom_analysis' was not called",
+      1
+    ],
+    [
+      "Statistical analysis missing key statistical terms",
+      1
+    ]
+  ],
+  "failed_tests": [
+    {
+      "name": "missing_data_handling",
+      "description": "Test agent handles missing data correctly",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "2.51s"
+    },
+    {
+      "name": "data_accuracy_sleep",
+      "description": "Test agent provides accurate numerical data",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "7.44s"
+    },
+    {
+      "name": "visualization_generation",
+      "description": "Test agent generates visualizations when requested",
+      "errors": [
+        "Expected tool 'generate_time_series_plots' was not called",
+        "No plot was generated despite request"
+      ],
+      "execution_time": "26.62s"
+    },
+    {
+      "name": "context_preservation",
+      "description": "Test agent maintains context in follow-up questions",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "16.83s"
+    },
+    {
+      "name": "date_range_4_weeks",
+      "description": "Test agent correctly calculates 4-week periods",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "6.73s"
+    },
+    {
+      "name": "correlation_analysis",
+      "description": "Test agent performs correlation analysis correctly",
+      "errors": [
+        "Expected tool 'perform_custom_analysis' was not called",
+        "Statistical analysis missing key statistical terms",
+        "Response indicates error or failure"
+      ],
+      "execution_time": "15.58s"
+    },
+    {
+      "name": "comprehensive_summary",
+      "description": "Test agent provides comprehensive health summary",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "13.98s"
+    },
+    {
+      "name": "rhr_trend_analysis",
+      "description": "Test agent analyzes specific metric trends",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "3.37s"
+    },
+    {
+      "name": "plot_generation_followup",
+      "description": "Test agent generates plots when user confirms",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called",
+        "Expected tool 'generate_time_series_plots' was not called",
+        "Plot not generated after user confirmation"
+      ],
+      "execution_time": "13.14s"
+    },
+    {
+      "name": "recent_data_query",
+      "description": "Test agent handles very recent data queries",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ],
+      "execution_time": "11.14s"
+    }
+  ],
+  "detailed_results": [
+    {
+      "test_name": "missing_data_handling",
+      "passed": false,
+      "query": "What was my sleep duration on the days when data is missing?",
+      "response_length": 169,
+      "tools_used": [],
+      "execution_time": "2.51s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "data_accuracy_sleep",
+      "passed": false,
+      "query": "What's my average sleep duration over the past 7 days?",
+      "response_length": 1203,
+      "tools_used": [],
+      "execution_time": "7.44s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "visualization_generation",
+      "passed": false,
+      "query": "Show me a graph of my steps for the past 7 days",
+      "response_length": 1083,
+      "tools_used": [],
+      "execution_time": "26.62s",
+      "errors": [
+        "Expected tool 'generate_time_series_plots' was not called",
+        "No plot was generated despite request"
+      ]
+    },
+    {
+      "test_name": "context_preservation",
+      "passed": false,
+      "query": "How was my sleep last night?",
+      "response_length": 1504,
+      "tools_used": [],
+      "execution_time": "16.83s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "date_range_4_weeks",
+      "passed": false,
+      "query": "What's my average stress over the last 4 weeks?",
+      "response_length": 547,
+      "tools_used": [],
+      "execution_time": "6.73s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "correlation_analysis",
+      "passed": false,
+      "query": "Is my deep sleep correlated with my stress over the last 30 days?",
+      "response_length": 1552,
+      "tools_used": [],
+      "execution_time": "15.58s",
+      "errors": [
+        "Expected tool 'perform_custom_analysis' was not called",
+        "Statistical analysis missing key statistical terms",
+        "Response indicates error or failure"
+      ]
+    },
+    {
+      "test_name": "comprehensive_summary",
+      "passed": false,
+      "query": "Give me a complete overview of my health trends",
+      "response_length": 1503,
+      "tools_used": [],
+      "execution_time": "13.98s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "rhr_trend_analysis",
+      "passed": false,
+      "query": "How has my resting heart rate been trending?",
+      "response_length": 169,
+      "tools_used": [],
+      "execution_time": "3.37s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    },
+    {
+      "test_name": "plot_generation_followup",
+      "passed": false,
+      "query": "Can you analyze my activity patterns?",
+      "response_length": 1296,
+      "tools_used": [],
+      "execution_time": "13.14s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called",
+        "Expected tool 'generate_time_series_plots' was not called",
+        "Plot not generated after user confirmation"
+      ]
+    },
+    {
+      "test_name": "recent_data_query",
+      "passed": false,
+      "query": "How did I sleep yesterday compared to my average?",
+      "response_length": 1069,
+      "tools_used": [],
+      "execution_time": "11.14s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called"
+      ]
+    }
+  ]
+}

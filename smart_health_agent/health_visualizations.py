@@ -124,21 +124,121 @@ def generate_time_series_plots(user_id, days=30):
             df_plot.index.name = 'Date'
             df_plot = df_plot.reset_index()
             
-            # Melt for easier plotting with Plotly Express
-            df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
-            
-            # Filter out rows where Value is NaN for cleaner plots
-            df_melted = df_melted.dropna(subset=['Value'])
-
-            if not df_melted.empty:
-                fig = px.line(df_melted, x='Date', y='Value', color='Metric',
-                              title=f'{category} Trends (Last {days} Days)',
-                              labels={'Value': 'Value', 'Date': 'Date'},
-                              hover_data={'Value': True}) # Show value on hover
-                fig.update_layout(hovermode="x unified") # Nice hover effect
-                plots.append(fig) # Return Plotly figure object directly for Gradio
+            # Special handling for each chart type based on user requests
+            if category == 'Activity':
+                # Convert distance from KM to meters
+                if 'distance_km' in df_plot.columns:
+                    df_plot['distance_m'] = df_plot['distance_km'] * 1000
+                    df_plot = df_plot.drop('distance_km', axis=1)
+                
+                df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                df_melted = df_melted.dropna(subset=['Value'])
+                
+                if not df_melted.empty:
+                    fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                  title=f'{category} Trends (Last {days} Days)',
+                                  labels={'Value': 'Value', 'Date': 'Date'},
+                                  hover_data={'Value': True})
+                    fig.update_layout(hovermode="x unified")
+                    plots.append(fig)
+                    
+            elif category == 'Sleep':
+                df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                df_melted = df_melted.dropna(subset=['Value'])
+                
+                if not df_melted.empty:
+                    fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                  title=f'{category} Trends (Last {days} Days)',
+                                  labels={'Value': 'Value', 'Date': 'Date'},
+                                  hover_data={'Value': True})
+                    
+                    # Add dotted line at 80 for sleep score threshold
+                    if 'sleep_score' in existing_metrics:
+                        fig.add_hline(y=80, line_dash="dot", line_color="red", 
+                                     annotation_text="Good Sleep Threshold (80)",
+                                     annotation_position="bottom right")
+                    
+                    fig.update_layout(hovermode="x unified")
+                    plots.append(fig)
+                    
+            elif category == 'Stress & RHR':
+                # Handle zero RHR values by filtering them out
+                if 'avg_daily_rhr' in df_plot.columns:
+                    df_plot.loc[df_plot['avg_daily_rhr'] == 0, 'avg_daily_rhr'] = None
+                
+                df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                df_melted = df_melted.dropna(subset=['Value'])
+                
+                if not df_melted.empty:
+                    fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                  title=f'{category} Trends (Last {days} Days)',
+                                  labels={'Value': 'Value', 'Date': 'Date'},
+                                  hover_data={'Value': True})
+                    fig.update_layout(hovermode="x unified")
+                    plots.append(fig)
+                    
+            elif category == 'Nutrition (Calories)':
+                # Add body battery comparison if available
+                body_battery_metrics = ['body_battery_highest', 'body_battery_lowest']
+                available_bb_metrics = [m for m in body_battery_metrics if m in available_columns]
+                
+                if available_bb_metrics:
+                    # Include body battery metrics with calories
+                    extended_metrics = existing_metrics + available_bb_metrics
+                    df_plot_extended = merged_df[extended_metrics].copy()
+                    df_plot_extended.index.name = 'Date'
+                    df_plot_extended = df_plot_extended.reset_index()
+                    
+                    df_melted = df_plot_extended.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                    df_melted = df_melted.dropna(subset=['Value'])
+                    
+                    if not df_melted.empty:
+                        fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                      title=f'{category} Trends with Body Battery (Last {days} Days)',
+                                      labels={'Value': 'Value', 'Date': 'Date'},
+                                      hover_data={'Value': True})
+                        fig.update_layout(hovermode="x unified")
+                        plots.append(fig)
+                else:
+                    # Standard calories plot without body battery
+                    df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                    df_melted = df_melted.dropna(subset=['Value'])
+                    
+                    if not df_melted.empty:
+                        fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                      title=f'{category} Trends (Last {days} Days)',
+                                      labels={'Value': 'Value', 'Date': 'Date'},
+                                      hover_data={'Value': True})
+                        fig.update_layout(hovermode="x unified")
+                        plots.append(fig)
+                        
+            elif category == 'Nutrition (Macros)':
+                # Use stacked bar chart instead of line chart for macros
+                df_melted = df_plot.melt(id_vars=['Date'], var_name='Macro', value_name='Grams')
+                df_melted = df_melted.dropna(subset=['Grams'])
+                
+                if not df_melted.empty:
+                    fig = px.bar(df_melted, x='Date', y='Grams', color='Macro',
+                                 title=f'Daily Macronutrient Intake (Last {days} Days)',
+                                 labels={'Grams': 'Grams', 'Date': 'Date'},
+                                 hover_data={'Grams': True})
+                    fig.update_layout(hovermode="x unified", barmode='stack')
+                    plots.append(fig)
+                    
             else:
-                logger.info(f"No data for {category} trends in the last {days} days.")
+                # Default handling for other categories (Stimulants, Subjective Wellbeing)
+                df_melted = df_plot.melt(id_vars=['Date'], var_name='Metric', value_name='Value')
+                df_melted = df_melted.dropna(subset=['Value'])
+
+                if not df_melted.empty:
+                    fig = px.line(df_melted, x='Date', y='Value', color='Metric',
+                                  title=f'{category} Trends (Last {days} Days)',
+                                  labels={'Value': 'Value', 'Date': 'Date'},
+                                  hover_data={'Value': True})
+                    fig.update_layout(hovermode="x unified")
+                    plots.append(fig)
+                else:
+                    logger.info(f"No data for {category} trends in the last {days} days.")
 
         logger.info(f"Generated {len(plots)} time-series plots")
         return plots

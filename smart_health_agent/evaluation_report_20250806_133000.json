@@ -1,0 +1,197 @@
+{
+  "summary": {
+    "total_tests": 10,
+    "passed": 9,
+    "failed": 1,
+    "success_rate": "90.0%",
+    "avg_execution_time": "14.06s"
+  },
+  "category_breakdown": {
+    "data_availability": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "data_accuracy": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "visualization_failure": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "context_handling": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "date_calculations": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "statistical_analysis": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "comprehensive_analysis": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "trend_analysis": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "plot_generation": {
+      "passed": 0,
+      "failed": 1,
+      "total": 1
+    },
+    "recent_data_handling": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    }
+  },
+  "most_common_errors": [
+    [
+      "Expected tool 'get_health_data_summary' was not called",
+      1
+    ],
+    [
+      "Expected tool 'generate_time_series_plots' was not called",
+      1
+    ]
+  ],
+  "failed_tests": [
+    {
+      "name": "plot_generation_followup",
+      "description": "Test agent generates plots when user confirms",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called",
+        "Expected tool 'generate_time_series_plots' was not called"
+      ],
+      "execution_time": "37.24s"
+    }
+  ],
+  "detailed_results": [
+    {
+      "test_name": "missing_data_handling",
+      "passed": true,
+      "query": "What was my sleep duration on the days when data is missing?",
+      "response_length": 1032,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "8.06s",
+      "errors": []
+    },
+    {
+      "test_name": "data_accuracy_sleep",
+      "passed": true,
+      "query": "What's my average sleep duration over the past 7 days?",
+      "response_length": 786,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "7.12s",
+      "errors": []
+    },
+    {
+      "test_name": "visualization_generation",
+      "passed": true,
+      "query": "Show me a graph of my steps for the past 7 days",
+      "response_length": 1158,
+      "tools_used": [
+        "generate_time_series_plots"
+      ],
+      "execution_time": "13.35s",
+      "errors": []
+    },
+    {
+      "test_name": "context_preservation",
+      "passed": true,
+      "query": "How was my sleep last night?",
+      "response_length": 1580,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "15.61s",
+      "errors": []
+    },
+    {
+      "test_name": "date_range_4_weeks",
+      "passed": true,
+      "query": "What's my average stress over the last 4 weeks?",
+      "response_length": 1293,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "10.35s",
+      "errors": []
+    },
+    {
+      "test_name": "correlation_analysis",
+      "passed": true,
+      "query": "Is my deep sleep correlated with my stress over the last 30 days?",
+      "response_length": 911,
+      "tools_used": [
+        "perform_custom_analysis"
+      ],
+      "execution_time": "12.67s",
+      "errors": []
+    },
+    {
+      "test_name": "comprehensive_summary",
+      "passed": true,
+      "query": "Give me a complete overview of my health trends",
+      "response_length": 1797,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "15.63s",
+      "errors": []
+    },
+    {
+      "test_name": "rhr_trend_analysis",
+      "passed": true,
+      "query": "How has my resting heart rate been trending?",
+      "response_length": 578,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "7.93s",
+      "errors": []
+    },
+    {
+      "test_name": "plot_generation_followup",
+      "passed": false,
+      "query": "Can you analyze my activity patterns?",
+      "response_length": 2072,
+      "tools_used": [
+        "perform_custom_analysis"
+      ],
+      "execution_time": "37.24s",
+      "errors": [
+        "Expected tool 'get_health_data_summary' was not called",
+        "Expected tool 'generate_time_series_plots' was not called"
+      ]
+    },
+    {
+      "test_name": "recent_data_query",
+      "passed": true,
+      "query": "How did I sleep yesterday compared to my average?",
+      "response_length": 1064,
+      "tools_used": [
+        "get_health_data_summary"
+      ],
+      "execution_time": "12.61s",
+      "errors": []
+    }
+  ]
+}
