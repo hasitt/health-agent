@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "python",
+      "args": ["-m", "garmin_mcp.server"],
+      "cwd": "/path/to/garmin-mcp-server",
+      "env": {
+        "GARMIN_EMAIL": "your_email@example.com",
+        "GARMIN_PASSWORD": "your_password",
+        "LOG_LEVEL": "INFO",
+        "CACHE_TTL": "300",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}

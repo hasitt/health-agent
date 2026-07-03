@@ -1,0 +1,70 @@
+{
+  "name": "Garmin MCP Server",
+  "description": "MCP server for Garmin Connect health and fitness data",
+  "version": "0.1.0",
+  "transport": {
+    "type": "stdio",
+    "command": "python",
+    "args": ["-m", "garmin_mcp.server"],
+    "cwd": "../",
+    "env": {
+      "GARMIN_EMAIL": "your_email@example.com", 
+      "GARMIN_PASSWORD": "your_password",
+      "LOG_LEVEL": "DEBUG",
+      "DEVELOPMENT_MODE": "true"
+    }
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": true,
+    "prompts": false,
+    "logging": true
+  },
+  "expectedTools": [
+    "get_auth_status",
+    "get_profile", 
+    "get_daily_summary",
+    "get_sleep_data",
+    "get_heart_rate_data",
+    "get_stress_data",
+    "get_activities",
+    "get_weekly_summary",
+    "get_monthly_summary",
+    "get_trends_analysis",
+    "get_goals_progress"
+  ],
+  "expectedResources": [
+    "garmin://profile",
+    "garmin://devices",
+    "garmin://goals",
+    "garmin://recent-data"
+  ],
+  "testCases": [
+    {
+      "name": "Get Authentication Status",
+      "tool": "get_auth_status",
+      "args": {}
+    },
+    {
+      "name": "Get Today's Summary",
+      "tool": "get_daily_summary", 
+      "args": {
+        "date": "2025-08-06"
+      }
+    },
+    {
+      "name": "Get Sleep Data",
+      "tool": "get_sleep_data",
+      "args": {
+        "date": "2025-08-06"
+      }
+    },
+    {
+      "name": "Get Weekly Summary",
+      "tool": "get_weekly_summary",
+      "args": {
+        "end_date": "2025-08-06"
+      }
+    }
+  ]
+}

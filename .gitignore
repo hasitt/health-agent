@@ -2,7 +2,12 @@
 *.log
 *.db
 .env
+.garmin_tokens
 .garmin_tokens/
 vectorstore/
 __pycache__/
 *.pyc
+.DS_Store
+graphify-out/
+# Real Claude Desktop config carries live Garmin credentials; commit the -example variants only
+smart_health_agent/garmin-mcp-server/claude_desktop_config.json

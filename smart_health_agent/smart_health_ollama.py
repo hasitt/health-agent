@@ -36,7 +36,7 @@ except ImportError as e:
 
 # Import your modules
 from database import db
-from garmin_utils import sync_garmin_data, initialize_garmin_client # Import initialize_garmin_client
+from garmin_mcp_adapter import sync_garmin_data, initialize_garmin_client
 from cronometer_parser import parse_cronometer_food_entries_csv
 import trend_analyzer
 import health_visualizations # For graphs
@@ -155,11 +155,12 @@ def initialize_langchain_agent():
             - Use markdown formatting for clarity
             
             VISUALIZATION HANDLING:
-            - When you successfully call generate_time_series_plots, do NOT describe the plot data in detail
-            - Do NOT create text tables or markdown representations of the data
-            - Simply acknowledge that the visualization was created and provide brief insights
-            - The actual interactive chart will be displayed separately by the UI
-            - Focus on interpreting what the trends might mean for the user's health
+            - When you successfully call generate_time_series_plots, provide health insights about trends and patterns
+            - NEVER create tables, lists of data points, or describe specific values from the visualization
+            - Do NOT say "the chart is displayed above/below" - the UI handles placement automatically
+            - Focus on health implications: "What does this trend mean for the user's wellness?"
+            - Provide 2-3 actionable recommendations based on the patterns you observe
+            - Keep visualization responses brief - the chart speaks for itself
             
             Remember: You're not just reporting data - you're helping people understand their health story and take positive action."""),
             
@@ -1622,16 +1623,22 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Smart Health Agent") as demo:
                 """Handle chat message submission"""
                 empty_msg, updated_history, graph = respond_to_chat(message, chat_history)
                 
-                # Update graph visibility and content
+                # Route plot to dedicated component and add confirmation to chat
                 if graph:
+                    # Add a clean confirmation message to chat history instead of plot data
+                    confirmation_msg = "📊 Interactive visualization generated and displayed below."
+                    updated_history_with_confirmation = updated_history + [
+                        {"role": "assistant", "content": confirmation_msg}
+                    ]
+                    
                     if isinstance(graph, list) and len(graph) > 0:
                         # If multiple graphs returned, show the first one
-                        return empty_msg, updated_history, gr.Plot(value=graph[0], visible=True)
+                        return "", updated_history_with_confirmation, gr.Plot(value=graph[0], visible=True)
                     else:
                         # Single graph
-                        return empty_msg, updated_history, gr.Plot(value=graph, visible=True)
+                        return "", updated_history_with_confirmation, gr.Plot(value=graph, visible=True)
                 else:
-                    # No graph suggested
+                    # No graph generated
                     return empty_msg, updated_history, gr.Plot(visible=False)
             
             def clear_chat():

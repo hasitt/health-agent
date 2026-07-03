@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "garmin-mcp": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-e", "GARMIN_EMAIL=your_email@example.com",
+        "-e", "GARMIN_PASSWORD=your_password_here",
+        "-e", "LOG_LEVEL=INFO",
+        "garmin-mcp-server"
+      ],
+      "env": {
+        "GARMIN_EMAIL": "your_email@example.com",
+        "GARMIN_PASSWORD": "your_password_here",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}

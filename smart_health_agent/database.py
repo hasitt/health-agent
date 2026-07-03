@@ -303,7 +303,49 @@ class Database:
                     UNIQUE(user_id, timestamp)
                 )
             """)
-            
+
+            # Per-timestamp samples within a single activity. Populated by the
+            # MCP adapter when an activity is persisted; consumed by feature
+            # extraction and post-workout chat drill-down queries.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS garmin_activity_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    activity_id TEXT NOT NULL,
+                    elapsed_seconds INTEGER NOT NULL,
+                    timestamp DATETIME,
+                    heart_rate INTEGER,
+                    speed_mps REAL,
+                    distance_m REAL,
+                    elevation_m REAL,
+                    cadence INTEGER,
+                    power_w INTEGER,
+                    temperature_c REAL,
+                    FOREIGN KEY (user_id) REFERENCES users(id),
+                    UNIQUE(activity_id, elapsed_seconds)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_activity_samples_activity
+                ON garmin_activity_samples(activity_id, elapsed_seconds)
+            """)
+
+            # Pre-computed activity features (HR-pace decoupling points,
+            # detected intervals, climb segments, etc.) populated by the
+            # feature extractor after each activity is persisted. Stored as
+            # JSON so the schema can evolve without migrations.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS garmin_activity_features (
+                    activity_id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    features_json TEXT NOT NULL,
+                    extractor_version TEXT NOT NULL,
+                    extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id),
+                    FOREIGN KEY (activity_id) REFERENCES garmin_activities(activity_id)
+                )
+            """)
+
             # Food log table (individual entries)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS food_log (
@@ -813,6 +855,94 @@ class Database:
     def upsert_garmin_activity(self, user_id: int, activity_data: Dict[str, Any]):
         """Insert or update Garmin activity data."""
         self.insert_activity_data(user_id, activity_data)
+
+    def insert_activity_samples(self, user_id: int, activity_id: str,
+                                samples: List[Dict[str, Any]]) -> int:
+        """Bulk-insert per-timestamp samples for one activity.
+
+        Each sample dict may contain: elapsed_seconds (required), timestamp,
+        heart_rate, speed_mps, distance_m, elevation_m, cadence, power_w,
+        temperature_c. Missing keys become NULL. Returns the number of rows
+        written. Idempotent via UNIQUE(activity_id, elapsed_seconds).
+        """
+        if not samples:
+            return 0
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            rows = [
+                (
+                    user_id, activity_id,
+                    s.get('elapsed_seconds'),
+                    s.get('timestamp'),
+                    s.get('heart_rate'),
+                    s.get('speed_mps'),
+                    s.get('distance_m'),
+                    s.get('elevation_m'),
+                    s.get('cadence'),
+                    s.get('power_w'),
+                    s.get('temperature_c'),
+                )
+                for s in samples if s.get('elapsed_seconds') is not None
+            ]
+            cursor.executemany("""
+                INSERT OR REPLACE INTO garmin_activity_samples
+                    (user_id, activity_id, elapsed_seconds, timestamp,
+                     heart_rate, speed_mps, distance_m, elevation_m,
+                     cadence, power_w, temperature_c)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+            conn.commit()
+            return len(rows)
+        except Exception as e:
+            logger.error(f"Error inserting activity samples for {activity_id}: {e}")
+            raise
+
+    def get_activity_samples(self, activity_id: str) -> List[Dict[str, Any]]:
+        """Read all samples for one activity ordered by elapsed_seconds."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM garmin_activity_samples
+                WHERE activity_id = ?
+                ORDER BY elapsed_seconds
+            """, (activity_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error reading activity samples for {activity_id}: {e}")
+            return []
+
+    def has_activity_samples(self, activity_id: str) -> bool:
+        """Quick check used by backfill to skip already-fetched activities."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM garmin_activity_samples WHERE activity_id = ? LIMIT 1",
+                (activity_id,),
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking activity samples for {activity_id}: {e}")
+            return False
+
+    def upsert_activity_features(self, user_id: int, activity_id: str,
+                                 features: Dict[str, Any], extractor_version: str):
+        """Store pre-computed features for an activity. features serialized as JSON."""
+        try:
+            import json
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO garmin_activity_features
+                    (activity_id, user_id, features_json, extractor_version, extracted_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (activity_id, user_id, json.dumps(features), extractor_version))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error upserting activity features for {activity_id}: {e}")
+            raise
 
 # CRITICAL: Create global database instance for import
 db = Database()
