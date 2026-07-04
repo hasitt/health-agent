@@ -95,11 +95,11 @@ This document outlines the tasks required to convert the existing Garmin integra
   - [x] Extract from existing activities fetching
   - [x] Include activity type, duration, calories
   - [x] Add Pydantic models for activity data validation
-- [ ] `get_steps_detail` - Detailed step data
-  - [ ] Hourly breakdown if available
-  - [ ] Add data quality indicators
-- [ ] `get_body_battery` - Energy levels (if supported by device)
-  - [ ] Include energy drain/recovery patterns
+- [x] `get_steps_detail` - Detailed step data
+  - [x] Hourly breakdown if available
+  - [x] Add data quality indicators
+- [x] `get_body_battery` - Energy levels (if supported by device)
+  - [x] Include energy drain/recovery patterns
 
 ### Historical Data Tools
 - [x] `get_weekly_summary` - 7-day averages and trends

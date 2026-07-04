@@ -75,17 +75,15 @@ def test_garmin_connection():
     print()
     
     try:
-        from garmin_utils import get_garmin_health_data
-        
-        # Test the connection
-        health_data = get_garmin_health_data()
-        
+        import asyncio
+        from garmin_mcp_adapter import initialize_garmin_client
+
+        # Authenticating (token-first, credential-fallback) proves the connection
+        client = asyncio.run(initialize_garmin_client())
+
         print("✅ Connection successful!")
         print()
-        print("📊 Sample data retrieved:")
-        print(f"   Steps: {health_data['steps']['steps']}")
-        print(f"   Sleep: {health_data['sleep']['sleep_hours']} hours")
-        print(f"   Resting HR: {health_data['heart_rate']['resting_hr']} bpm")
+        print(f"👤 Connected as: {client.full_name or client.display_name}")
         print()
         print("🎉 Garmin integration is working correctly!")
         

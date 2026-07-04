@@ -1856,10 +1856,55 @@ class GarminDataFetcher:
                 return self.cache[cache_key]
             
             date_str = target_date.strftime('%Y-%m-%d')
-            
-            # Body Battery is a specific Garmin feature that may not be available via API
-            # We'll try to infer energy levels from other available data
-            
+
+            # Prefer real device Body Battery; fall back to estimation below
+            # for devices that don't report it.
+            try:
+                client = self.authenticator.get_client()
+                bb_days = await self._make_api_call(client.get_body_battery, date_str)
+            except Exception:
+                bb_days = None
+
+            day = bb_days[0] if bb_days else {}
+            values = [v for v in (day.get('bodyBatteryValuesArray') or []) if v and v[1] is not None]
+            if values:
+                levels = [v[1] for v in values]
+                charged = day.get('charged')
+                drained = day.get('drained')
+                current = levels[-1]
+                if current >= 80:
+                    energy_level, recovery_status = "high", "excellent"
+                elif current >= 65:
+                    energy_level, recovery_status = "good", "good"
+                elif current >= 45:
+                    energy_level, recovery_status = "moderate", "fair"
+                else:
+                    energy_level, recovery_status = "low", "poor"
+
+                body_battery_data = {
+                    "date": target_date.isoformat(),
+                    "energy_score": current,
+                    "energy_level": energy_level,
+                    "recovery_status": recovery_status,
+                    "data_source": "device",
+                    "charged": charged,
+                    "drained": drained,
+                    "start_level": levels[0],
+                    "end_level": current,
+                    "max_level": max(levels),
+                    "min_level": min(levels),
+                    "net_change": (charged or 0) - (drained or 0),
+                    "measurement_count": len(levels),
+                }
+                result = {
+                    "status": "success",
+                    "body_battery": body_battery_data,
+                    "message": f"Body battery data retrieved for {date_str}"
+                }
+                result = enhance_data_for_ai(result, "recovery")
+                self.cache[cache_key] = result
+                return result
+
             # Get related metrics to estimate energy/recovery status
             sleep_data = None
             hr_data = None
