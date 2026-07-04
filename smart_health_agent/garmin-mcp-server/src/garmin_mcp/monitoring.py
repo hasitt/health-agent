@@ -209,7 +209,9 @@ class PerformanceMonitor:
         if summary["requests"]["avg_response_time_ms"] > 5000:
             health_issues.append("High response times")
         
-        if summary["cache"]["hit_rate_percent"] < 30:
+        # Only meaningful once the cache has seen traffic; a fresh monitor
+        # would otherwise report degraded at 0%.
+        if summary["cache"]["total_requests"] > 0 and summary["cache"]["hit_rate_percent"] < 30:
             health_issues.append("Low cache hit rate")
         
         if summary["api_calls"]["rate_limit_delays"] > 10:

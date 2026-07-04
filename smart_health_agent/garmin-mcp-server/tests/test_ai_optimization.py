@@ -49,7 +49,7 @@ class TestHealthDataFormatter:
         assert "12,500 steps" in result
         assert "8.20 km" in result
         assert "456 active calories" in result
-        assert "achieved your goal" in result.lower()
+        assert "achieved your step goal" in result.lower()
     
     def test_format_daily_summary_goal_not_reached(self):
         """Test daily summary formatting when goal not reached."""

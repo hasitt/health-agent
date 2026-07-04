@@ -123,10 +123,11 @@ class DateParser:
         Raises:
             ValidationError: If date cannot be parsed
         """
-        if isinstance(date_input, date):
-            return date_input
-        elif isinstance(date_input, datetime):
+        # datetime subclasses date, so it must be checked first
+        if isinstance(date_input, datetime):
             return date_input.date()
+        elif isinstance(date_input, date):
+            return date_input
         
         if not isinstance(date_input, str):
             raise ValidationError(

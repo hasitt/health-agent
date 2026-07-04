@@ -11,3 +11,6 @@ __pycache__/
 graphify-out/
 # Real Claude Desktop config carries live Garmin credentials; commit the -example variants only
 smart_health_agent/garmin-mcp-server/claude_desktop_config.json
+htmlcov/
+coverage.xml
+.coverage
