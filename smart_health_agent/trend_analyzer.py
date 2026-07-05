@@ -250,6 +250,18 @@ def analyze_custom_correlation(user_id, metric_x_name, metric_y_name, start_date
         else:
             filtered_df = unified_df.copy()
 
+        # A metric column is absent entirely when its source table had no rows
+        # in the date range (e.g. wellbeing entries older than the window).
+        missing = [m for m in (metric_x_name, metric_y_name) if m not in filtered_df.columns]
+        if missing:
+            return {
+                'status': 'error',
+                'message': (f"No data recorded for {', '.join(missing)} between {start_date} and {end_date}. "
+                            f"Do not retry these metrics for this period; use a different metric or tell the user to log it."),
+                'sample_size': 0,
+                'filters_applied': filters
+            }
+
         # Drop rows with NaN in either X or Y metric for correlation calculation
         # This ensures that only complete data points are used for correlation
         initial_filtered_rows = len(filtered_df)
