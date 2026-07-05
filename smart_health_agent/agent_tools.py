@@ -78,9 +78,9 @@ class TrendAnalysisInput(BaseModel):
         default="correlation"
     )
     days: int = Field(
-        description="Number of past days to include in analysis (default: 30)",
+        description="Number of past days to include in analysis (default: 30, minimum 2)",
         default=30,
-        ge=7,
+        ge=2,
         le=365
     )
 

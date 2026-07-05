@@ -7,6 +7,7 @@ import os
 import asyncio
 import logging
 import re
+import requests
 from dotenv import load_dotenv
 
 # Configure logging first
@@ -53,7 +54,7 @@ garmin_sync_status = "Not synced"
 cronometer_upload_status = "No data uploaded"
 
 # --- LLM Configuration ---
-LLM_MODEL = "llama3.2:3b"  # Now supports tool calling with downloaded model
+LLM_MODEL = "qwen3.5:9b"  # 8-10B class; reliable tool calling, fits 16GB
 OLLAMA_HOST = "http://localhost:11434"
 LLM_CLIENT = None
 
@@ -169,8 +170,13 @@ def initialize_langchain_agent():
             MessagesPlaceholder("agent_scratchpad"),
         ])
         
-        # Check if model supports tool calling based on model name
-        supports_tools = "llama" in LLM_MODEL.lower() and ("3.1" in LLM_MODEL or "3.2" in LLM_MODEL)
+        # Ask Ollama whether the model supports tool calling; fall back to a
+        # name heuristic if the endpoint is unavailable (older Ollama).
+        try:
+            _show = requests.post(f"{OLLAMA_HOST}/api/show", json={"model": LLM_MODEL}, timeout=5)
+            supports_tools = "tools" in _show.json().get("capabilities", [])
+        except Exception:
+            supports_tools = any(f in LLM_MODEL.lower() for f in ("llama3.1", "llama3.2", "qwen", "mistral"))
         
         if supports_tools:
             try:
