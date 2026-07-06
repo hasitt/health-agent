@@ -146,6 +146,52 @@ async def sync_garmin_data(user_id: int, days_to_sync: int = 30,
     return True
 
 
+async def backfill_daily_range(user_id: int, start: str, end: str,
+                               skip_existing: bool = True) -> dict:
+    """Backfill daily metrics for an explicit [start, end] date range.
+
+    Unlike ``sync_garmin_data`` this ignores sync_status, so it can reach
+    arbitrarily far back. Days that already have a daily-summary row are
+    skipped unless ``skip_existing=False``, which makes reruns resumable
+    after an interruption. Paced by the fetcher's rate limiter — expect
+    roughly 30-40s per day.
+    """
+    await _ensure_fetcher()
+
+    start_d = datetime.strptime(start, "%Y-%m-%d").date()
+    end_d = datetime.strptime(end, "%Y-%m-%d").date()
+
+    existing = set()
+    if skip_existing:
+        for row in db.get_garmin_daily_summary(user_id, start, end) or []:
+            existing.add(str(row.get("date")))
+
+    total = (end_d - start_d).days + 1
+    synced = skipped = failed = 0
+    current = start_d
+    while current <= end_d:
+        date_str = current.strftime("%Y-%m-%d")
+        if date_str in existing:
+            skipped += 1
+        else:
+            try:
+                await _sync_one_day(user_id, date_str)
+                synced += 1
+            except Exception as e:
+                logger.error("Backfill failed for %s: %s", date_str, e)
+                failed += 1
+        done = synced + skipped + failed
+        if done % 25 == 0 or current == end_d:
+            logger.info("Backfill progress: %d/%d (synced=%d skipped=%d failed=%d)",
+                        done, total, synced, skipped, failed)
+        current += timedelta(days=1)
+
+    report = {"range": f"{start} -> {end}", "total_days": total,
+              "synced": synced, "skipped": skipped, "failed": failed}
+    logger.info("Backfill complete: %s", report)
+    return report
+
+
 async def _sync_one_day(user_id: int, date_str: str) -> None:
     """Fetch one day's metrics from the MCP fetcher and persist them.
 
