@@ -132,6 +132,7 @@ def initialize_langchain_agent():
             1. get_health_data_summary: Get recent health statistics and trends
             2. generate_time_series_plots: Create visualizations showing health metrics over time
             3. perform_custom_analysis: Analyze relationships between different health metrics
+            4. analyze_workout: Break down a single workout second-by-second (run/ride/swim)
 
             WORKFLOW:
             1. When users ask about their health, first use get_health_data_summary to understand their recent data
@@ -140,6 +141,20 @@ def initialize_langchain_agent():
             4. For relationship questions (correlation, impact), use perform_custom_analysis
             5. For follow-up questions like "yes" or "show me", refer to conversation context and take appropriate action
             6. Always provide actionable recommendations based on the data
+
+            POST-WORKOUT COACHING (analyze_workout):
+            - When the user asks about a specific session ("analyze my last run", "how was my
+              ride", "break down my workout"), call analyze_workout.
+            - The tool returns factual findings grouped by method: sd_excursion (unusual moments),
+              change_point (workout phases), decoupling (aerobic drift), hr_recovery.
+            - Turn these facts into a SHORT post-run coaching read, in this order:
+              (a) one-line verdict on how the session went,
+              (b) 2-3 specific things that happened and when (cite the minute and numbers),
+              (c) 1-2 concrete things to work on next.
+            - aerobic_decoupling is the most important signal: >5% means the aerobic base was the
+              limiter (or heat/fatigue) — say so plainly. Negative/low decoupling = well-paced.
+            - Keep it correlational, not causal ("coincided with", "was followed by"). If hr_only
+              is true, don't invent pace/power explanations. Be motivating and concise.
 
             CONVERSATION HANDLING:
             - Pay attention to chat history and maintain context

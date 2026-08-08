@@ -324,9 +324,141 @@ def get_health_data_summary_tool(data_type: str = "all", days: int = 7) -> Dict[
             "summary": {}
         }
 
+# ---------------------------------------------------------------------------
+# Per-workout analysis ("analyze my last run")
+# ---------------------------------------------------------------------------
+# Selector keyword -> the garmin_activities.activity_type values it matches.
+_SELECTOR_TYPES = {
+    "most_recent_run": {"running", "treadmill_running", "trail_running"},
+    "most_recent_ride": {"road_biking", "cycling", "indoor_cycling", "gravel_cycling", "mountain_biking"},
+    "most_recent_swim": {"lap_swimming", "open_water_swimming"},
+    "most_recent": None,  # any type
+}
+
+
+class WorkoutAnalysisInput(BaseModel):
+    """Input for analyze_workout."""
+    activity_selector: str = Field(
+        "most_recent_run",
+        description=("Which workout to analyze: 'most_recent_run', 'most_recent_ride', "
+                     "'most_recent_swim', 'most_recent' (any type), or a date 'YYYY-MM-DD'."),
+    )
+    activity_id: Optional[str] = Field(
+        None, description="Specific Garmin activity id; overrides activity_selector when set.")
+    sync_first: bool = Field(
+        True, description="Sync the last couple of days of Garmin data first so a just-finished workout is included.")
+
+
+def _resolve_activity(user_id: int, selector: str, activity_id: Optional[str]):
+    """Return an activity row (dict) that has samples, or None."""
+    end = datetime.now()
+    start = end - timedelta(days=120)
+    rows = db.get_garmin_activities(
+        user_id, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"))
+    rows = [r for r in rows if db.has_activity_samples(str(r["activity_id"]))]
+    rows.sort(key=lambda r: str(r.get("start_time", "")), reverse=True)
+
+    if activity_id:
+        return next((r for r in rows if str(r["activity_id"]) == str(activity_id)), None)
+
+    # date selector
+    if selector and selector[:4].isdigit() and "-" in selector:
+        return next((r for r in rows if str(r.get("start_time", "")).startswith(selector)), None)
+
+    types = _SELECTOR_TYPES.get(selector, _SELECTOR_TYPES["most_recent_run"])
+    for r in rows:
+        if types is None or r.get("activity_type") in types:
+            return r
+    return None
+
+
+def _maybe_sync(user_id: int) -> bool:
+    """Best-effort sync of the last 2 days so a just-finished workout is present.
+    Safe in the sync chat handler (no running event loop); never raises."""
+    try:
+        import asyncio
+        from garmin_mcp_adapter import sync_garmin_data
+        return bool(asyncio.run(sync_garmin_data(user_id, days_to_sync=2)))
+    except RuntimeError:
+        logger.info("analyze_workout: event loop already running, skipping in-tool sync")
+        return False
+    except Exception as e:
+        logger.warning(f"analyze_workout: sync_first failed ({e}); analyzing existing data")
+        return False
+
+
+@tool("analyze_workout", args_schema=WorkoutAnalysisInput)
+def analyze_workout_tool(activity_selector: str = "most_recent_run",
+                         activity_id: Optional[str] = None,
+                         sync_first: bool = True) -> Dict[str, Any]:
+    """Analyze a single workout second-by-second and explain what happened and why.
+
+    Use for 'analyze my last run', 'how was my ride', 'break down my workout',
+    post-session reviews. Detects when heart rate, pace, power, cadence and
+    elevation moved unusually far from the session's own average, measures
+    aerobic decoupling (heart-rate drift vs pace/power) and heart-rate recovery,
+    and returns plain-language findings. Turn these into a short post-workout
+    coaching summary: what happened, why, and one or two things to work on.
+    """
+    try:
+        try:
+            from smart_health_ollama import current_user_id
+            user_id = current_user_id
+        except ImportError:
+            user_id = 1
+
+        if sync_first:
+            _maybe_sync(user_id)
+
+        row = _resolve_activity(user_id, activity_selector, activity_id)
+        if not row:
+            return {"error": f"No workout with detailed samples found for selector "
+                             f"'{activity_id or activity_selector}'. Try syncing, or ask for a different type."}
+
+        import workout_analyzer
+        meta = {
+            "type": row.get("activity_type"),
+            "start_time": row.get("start_time"),
+            "duration_min": row.get("duration_minutes"),
+            "distance_km": row.get("distance_km"),
+        }
+        res = workout_analyzer.analyze_workout(
+            str(row["activity_id"]), user_id=user_id, activity_meta=meta)
+
+        if not res["metrics_analyzed"]:
+            return {"activity": meta, "insights": [],
+                    "note": "No analyzable sensor streams in this workout."}
+
+        # group narrative texts by method for the LLM to coach from
+        insights = {}
+        for n in res.get("narratives", []):
+            insights.setdefault(n.get("method", "sd_excursion"), []).append(n["text"])
+
+        payload = {
+            "activity": meta,
+            "metrics_analyzed": res["metrics_analyzed"],
+            "hr_only": res["degraded"],
+            "insights_by_method": insights,
+            "excursion_count": len(res.get("excursions", [])),
+        }
+        if res.get("decoupling"):
+            payload["aerobic_decoupling"] = res["decoupling"]
+        if res.get("hr_recovery"):
+            payload["hr_recovery"] = res["hr_recovery"]
+        if res["degraded"]:
+            payload["note"] = ("Heart-rate-only workout (no pace/power) — cross-metric "
+                               "explanations aren't available, only HR timing and recovery.")
+        return payload
+
+    except Exception as e:
+        logger.error(f"Error analyzing workout: {e}", exc_info=True)
+        return {"error": f"Workout analysis failed: {str(e)}"}
+
+
 # Export the tools list for easy import
 HEALTH_AGENT_TOOLS = [
     generate_time_series_plots_tool,
     perform_custom_analysis_tool,
-    get_health_data_summary_tool
+    get_health_data_summary_tool,
+    analyze_workout_tool,
 ]
