@@ -47,6 +47,19 @@ Corrected and accurate display of daily summary data (steps, stress, peak stress
 
 Improved display formatting with emoji indicators and better organization.
 
+📥 Backlog — Requested Features
+Quick Subjective Check-In (emoji tap-through) — requested 2026-08-08
+Goal: Make logging subjective wellbeing effortless so it actually gets done daily. Subjective tracking has been the weak link (no entries since Aug 2025), which also starves the mood/energy correlation analyses of recent data.
+
+Concept: On app open, present a lightweight guided check-in — one question at a time, each answered with a single tap on three large smileys (🙁 sad / 😐 neutral / 🙂 happy). Tapping auto-advances to the next question: mood → energy → stress → sleep quality → focus → motivation. A few taps and you're done; offer a "skip" and a "done for today" so it's never a chore.
+
+Implementation notes:
+- Reuse the existing write path: submit_mood_entry(mood, energy, stress, sleep_quality, focus, motivation, ...) -> db.upsert_subjective_wellbeing (smart_health_ollama.py:507). No new table needed — subjective_wellbeing already stores these on a 1–10 scale (CHECK 1..10).
+- Map the 3 smileys onto the 1–10 scale (e.g. 🙁=2, 😐=5, 🙂=8). Consider a 5-face variant later for finer granularity; start with 3 for speed.
+- Note per-metric valence: for stress, 🙂 should mean "low stress" (invert the mapping) so a happy face is always the "good" answer.
+- Show it on launch only if today has no entry yet; make it dismissable.
+- Once flowing, this revives the mood/energy correlations that currently return "no data recorded" for recent windows.
+
 🚀 Next Phases: Roadmap for Future Development
 Phase 1: Enhanced Visualization (Immediate Next Step)
 Goal: Provide clear, interactive graphs and trending data visualizations within the Gradio UI to enhance user understanding and provide richer context for LLM interpretation.
