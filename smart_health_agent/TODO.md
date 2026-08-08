@@ -1,187 +1,68 @@
-Smart Health Agent Project Roadmap
-This document outlines the current status, immediate next steps, and future phases for the development of your personalized Smart Health Agent. It serves as a living roadmap to guide our progress and ensure clarity on features and priorities.
+# Smart Health Agent — Kanban Board
 
-🎯 Project Vision & Overarching Goal
-To build a comprehensive, AI-powered personal health agent that integrates diverse health data (wearables, dietary, subjective wellbeing), identifies meaningful correlations and trends, and provides personalized, actionable, and empathetic insights and recommendations through an intuitive and interactive interface.
+**Vision:** an AI-powered personal health agent that integrates wearable, dietary, and subjective data, finds meaningful correlations, and delivers personalized, empathetic, actionable coaching through a conversational interface. Long-term target: the triathlon market — AI coaching that auto-adapts to the athlete's metrics.
 
-✅ Current State: Achieved Milestones
-We have established a robust foundation, successfully implementing the following core functionalities:
+**Principles:** factual display of raw data (LLM does interpretation) · highly personalized · privacy-first.
 
-Garmin Data Infrastructure:
+> Board columns below are ordered Backlog → Next Up → In Progress → Done.
+> The **Done** column is history — skip it unless you specifically need to know
+> what's already built (see CLAUDE.md).
 
-Seamless collection and storage of historical and granular data (daily summaries, sleep, activities, minute-by-minute stress levels) in health_data.db.
+---
 
-Efficient sync strategy with performance optimizations (indexing, upsert logic).
+## 🗓️ Backlog
 
-Cronometer Data Infrastructure:
+- **Physiological thresholds** — fetch/store lactate threshold HR, FTP, and HR zones from Garmin; implement `PhysiologicalBand` in `workout_analyzer.py` (the pluggable seam already exists). Unlocks time-in-zone ("your easy run wasn't easy") and threshold-relative workout narratives.
+- **Tier-2 workout stats** — lagged cross-correlation (HR responds to effort with delay), CUSUM (slow drift), MAD robust bands. Refinements to the analysis engine.
+- **Annotated workout chart** — Plotly time-series of a session with excursions/phases marked; a `plot_workout` tool. (No activity-sample plotting exists yet.)
+- **Enhanced visualization tab** — dedicated Graphs tab with time-series (stress, sleep, RHR, steps, body battery, weekly mood/energy) and correlation scatter/bar charts. Candidate correlations: carb timing vs deep sleep, steps vs next-day sleep score, evening strength vs next-day RHR, late caffeine vs REM%, Mg vs sleep latency, meditation vs HRV, omega-3 vs HRV, Na:K vs SpO2, fiber vs body-battery recharge, late dinner vs deep sleep, alcohol vs respiration, evening yoga vs morning stress, lunch sat-fat vs afternoon battery slump, B6 vs wake episodes.
+- **Comprehensive data sources** — other wearables, lab results (blood/hormones/nutrients), genetic reports, weather API (heat/humidity correlations).
+- **Proactive nudges** — LLM offers unprompted insights from real-time patterns ("HRV low today, consider recovery").
+- **Voice interaction** — voice-to-text and text-to-speech for hands-free logging/queries.
+- **Cloud + mobile app** — migrate backend to cloud, native iOS/Android, auth, push notifications. The path to the triathlon-market product.
+- **Cronometer auto-sync** — replace manual CSV upload with the Cronometer export API flow (login → nonce → /export). See earlier research.
+- **Port micronutrient parsing** from the sibling `unified-health-mcp` repo (or retire that repo).
 
-Manual CSV import functionality for "Food & Recipe Entries" (including detailed nutrients, caffeine, alcohol) into food_log and supplements tables.
+## 📋 Next Up (To Do)
 
-Robust parsing and upsert logic for dietary data.
+- **Quick Subjective Check-In (emoji tap-through)** — _requested 2026-08-08._ See detailed card below. Highest-value UX item: revives subjective tracking (dead since Aug 2025), which also feeds the mood/energy correlations that currently return "no data."
+- **Validate workout analysis on external datasets** — import public run/ride `.fit`/CSV data (e.g. rikluost/athlete_hr_predict ~50 runs, GoldenCheetah OpenData) via a small `analyze_samples_df` entry point; confirm decoupling / change-points / HR-recovery generalize beyond Stan's own data. Cheap de-risking before building further.
+- **Grade-adjusted pace** — normalize speed by gradient (from elevation) so a slowdown *uphill* isn't flagged as fatigue. Fixes a known false-positive class in the workout analyzer.
+- **Fix `distance_m` parser** — Garmin sends cumulative distance as `sumDistance`, parser expects `directDistance` (`data_fetcher.py:481-492`); distance is 0% populated. Unlocks distance-based splits and pace-from-distance.
 
-Subjective Wellbeing & Mood Tracking:
+## 🚧 In Progress
 
-Enhanced subjective_wellbeing table with 15+ new mood and lifestyle tracking fields.
+- _(nothing active — post-run coach just shipped)_
 
-Comprehensive "Daily Mood Tracker" UI for data entry.
+## ✅ Done
 
-Initial Trend Analysis Functions:
+- Garmin data infrastructure: MCP server + `garmin_mcp_adapter`, incremental sync, resumable historical backfill (12+ months, ~948k activity samples), body-battery from device.
+- Cronometer manual CSV import (food/recipe entries, nutrients, caffeine, alcohol).
+- Subjective wellbeing table + Daily Mood Tracker UI (`submit_mood_entry`).
+- Trend analysis: stress consistency, steps↔sleep, activity↔RHR, caffeine/alcohol↔stress/mood; missing-metric guard.
+- LLM: upgraded to qwen3.5:9b, Ollama capability-based tool detection, tool-calling Health Detective agent.
+- Gradio tabbed UI (dashboard, mood tracker), verified end-to-end.
+- Workout analysis engine (`workout_analyzer.py`): per-metric SD-band excursions, windowed context, cross-metric correlation.
+- Tier-1 workout analyzers (`workout_advanced.py`): change-point segmentation, aerobic decoupling, HR recovery, rolling-baseline.
+- **Post-run coach**: `analyze_workout` tool wired into the chat agent + coaching prompt — "analyze my last run" gives a live verdict/what-happened/what-to-work-on read.
+- Test suite green (96/96), credentials scrubbed, legacy `garmin_utils` retired.
 
-Implemented specific correlation analyses: Stress Consistency, Steps vs. Sleep Effect, Activity Type vs. RHR Impact.
+---
 
-Advanced analytics for stress-lifestyle correlations (caffeine/alcohol vs. stress/mood, mood ratings vs. Garmin stress).
+## Card: Quick Subjective Check-In (emoji tap-through)
 
-Enhanced LLM Integration:
+**Goal:** make logging subjective wellbeing effortless so it actually happens. The key is prompting at the *right moments* with near-zero friction — a couple of taps, never a form.
 
-OllamaLLM is integrated and receives comprehensive health context (Garmin, subjective, lifestyle, trends).
+**Interaction:** one question at a time, each answered by tapping one of three large smileys 🙁 / 😐 / 🙂. Tapping auto-advances to the next. A "skip" and "done for today" are always available.
 
-LLM provides personalized, interpretive, and actionable insights with an enhanced "Expert AI Health Analyst and Coach" role, demonstrating deeper inferential reasoning.
+**Prompt at relevant times (the crux — not just on open):**
+- **Morning** (on first open of the day): mood, energy, sleep quality.
+- **Post-workout** (when a new activity syncs): "how did that session feel?" — RPE / mood — captured while it's fresh, and pairs directly with the workout analysis.
+- **Evening** (wind-down): stress, focus, motivation.
+- Only surface a context if it has no entry yet for that window today; keep each dismissable.
 
-Adherence to the "factual display" principle for raw data, with LLM handling interpretation.
-
-Gradio UI:
-
-Organized tabbed interface (Main Dashboard, Daily Mood Tracker).
-
-Corrected and accurate display of daily summary data (steps, stress, peak stress).
-
-Improved display formatting with emoji indicators and better organization.
-
-📥 Backlog — Requested Features
-Quick Subjective Check-In (emoji tap-through) — requested 2026-08-08
-Goal: Make logging subjective wellbeing effortless so it actually gets done daily. Subjective tracking has been the weak link (no entries since Aug 2025), which also starves the mood/energy correlation analyses of recent data.
-
-Concept: On app open, present a lightweight guided check-in — one question at a time, each answered with a single tap on three large smileys (🙁 sad / 😐 neutral / 🙂 happy). Tapping auto-advances to the next question: mood → energy → stress → sleep quality → focus → motivation. A few taps and you're done; offer a "skip" and a "done for today" so it's never a chore.
-
-Implementation notes:
-- Reuse the existing write path: submit_mood_entry(mood, energy, stress, sleep_quality, focus, motivation, ...) -> db.upsert_subjective_wellbeing (smart_health_ollama.py:507). No new table needed — subjective_wellbeing already stores these on a 1–10 scale (CHECK 1..10).
-- Map the 3 smileys onto the 1–10 scale (e.g. 🙁=2, 😐=5, 🙂=8). Consider a 5-face variant later for finer granularity; start with 3 for speed.
-- Note per-metric valence: for stress, 🙂 should mean "low stress" (invert the mapping) so a happy face is always the "good" answer.
-- Show it on launch only if today has no entry yet; make it dismissable.
-- Once flowing, this revives the mood/energy correlations that currently return "no data recorded" for recent windows.
-
-🚀 Next Phases: Roadmap for Future Development
-Phase 1: Enhanced Visualization (Immediate Next Step)
-Goal: Provide clear, interactive graphs and trending data visualizations within the Gradio UI to enhance user understanding and provide richer context for LLM interpretation.
-
-Implementation:
-
-Integrate a plotting library (e.g., matplotlib or plotly) into the application.
-
-Create a dedicated "Graphs" or "Trends Visuals" tab in the Gradio UI.
-
-Develop functions to generate the following initial visualizations:
-
-Time-Series Plots:
-
-Daily Average Stress (Garmin & Subjective) over time
-
-Daily Sleep Score & Deep Sleep Percentage over time
-
-Daily Resting Heart Rate over time
-
-Daily Total Steps over time
-
-Daily Body Battery (if granularly available from Garmin) over time
-
-Weekly Averages for Mood, Energy, Anxiety, Focus ratings
-
-Daily Caffeine and Alcohol intake over time
-
-Correlation-Specific Visualizations (based on existing data):
-
-Carb timing vs. deep-sleep minutes: Scatter plot of dinner carb intake vs. deep sleep % for that night.
-
-Step count vs. Sleep score: Scatter plot of daily steps vs. next-day sleep score.
-
-Evening resistance session vs. next-day RHR: Bar chart comparing average RHR on days with evening strength vs. other days.
-
-Red-meat dinner vs. lower RHR: Bar chart comparing average RHR after red meat dinner vs. other dinners.
-
-Caffeine after 15:00 vs. REM%: Scatter plot of late caffeine intake vs. REM sleep percentage.
-
-High magnesium intake vs. reduced bedtime latency: Scatter plot of daily Mg intake vs. sleep latency.
-
-Meditation minutes vs. HRV trend: Line graph showing 7-day HRV rolling average alongside meditation minutes.
-
-Omega-3 vs. HRV: Scatter plot of daily EPA+DHA vs. 24-hour HRV average.
-
-Na:K ratio vs. SpO2: Scatter plot of Na:K ratio vs. overnight SpO2.
-
-Fiber vs. Body Battery recharge: Scatter plot of daily fiber vs. next-day Body Battery recharge.
-
-Last calorie ≥3h pre-bed vs. Deep-sleep: Bar chart comparing deep sleep % for early vs. late dinners.
-
-Alcohol vs. Respiration Rate: Scatter plot of alcohol intake vs. night-time respiration rate.
-
-Evening yoga vs. Morning stress: Bar chart comparing morning stress score after evening yoga vs. other evenings.
-
-Lunch sat-fat vs. Body Battery slump: Scatter plot of lunch saturated fat vs. afternoon Body Battery slump.
-
-Vitamin B6 vs. Wake episodes/Vivid REM: Scatter plot of B6 intake vs. wake episodes/vivid REM.
-
-Phase 2: Iterative Correlation Implementation & LLM Refinement
-Goal: Implement more of the advanced correlation logic and further refine the LLM's ability to interpret and explain these complex patterns, preparing for a conversational interface.
-
-Implementation:
-
-Develop backend logic for remaining desired correlations (e.g., those requiring more advanced Garmin metrics like Anaerobic Load, VO₂max, ATL/CTL ratio, specific training zones).
-
-Update the LLM's prompt to explicitly reference and interpret these newly calculated and visualized correlations, encouraging even deeper "health detective" reasoning.
-
-Focus on generating more nuanced "if-then" scenarios and predictive insights.
-
-Phase 3: Interactive Chat-Based System & Comprehensive Data Integration
-Goal: Transform the application into a fully interactive, conversational AI health coach with dynamic visualizations and integrate a truly comprehensive range of external data sources.
-
-Interactive Chat Interface:
-
-Implement a persistent chat history within the UI.
-
-Integrate voice-to-text and text-to-speech for natural language interaction.
-
-Enable dynamic display of relevant graphs and data snippets directly within the chat conversation based on user queries.
-
-Allow quick UI selections/checkboxes for common data entry (e.g., mood, quick food logs).
-
-Comprehensive Data Source Expansion:
-
-All Wearables: Explore and integrate data from a wider array of wearable devices beyond Garmin and Cronometer, ensuring a holistic view of activity, sleep, and physiological metrics.
-
-All Labs: Develop robust mechanisms for importing, parsing, and analyzing various lab results (e.g., blood work, hormone panels, nutrient deficiencies), securely integrating them into the LLM context.
-
-All Genetic Reports: Investigate secure and privacy-preserving methods to integrate and interpret genetic predisposition data from various providers, enabling highly personalized and preventative insights.
-
-Advanced Data Integrations (Specific Examples):
-
-Weather Data: Integrate with a weather API to pull local temperature/humidity data for correlations like "Hydration on hot days vs. stress score."
-
-Other Wearables/Apps: Expand data source options as needed (e.g., specific Garmin Connect IQ app data for screen time, dedicated light sensors).
-
-Proactive Insights & Nudges:
-
-Develop a system for the LLM to proactively offer insights or "nudges" based on real-time data patterns (e.g., "Your HRV is lower today, consider a recovery day").
-
-Phase 4: Standalone Cloud-Based Phone Application
-Goal: Evolve the application from a local Gradio-based interface to a cloud-hosted, standalone mobile application for broader accessibility and enhanced user experience.
-
-Platform & Deployment:
-
-Migrate the backend logic to a scalable cloud infrastructure.
-
-Develop native or cross-platform mobile applications (iOS/Android) that connect to the cloud backend.
-
-Implement robust user authentication and data synchronization for a mobile environment.
-
-Optimize UI/UX for mobile devices, including push notifications for proactive insights.
-
-✨ Key Principles Maintained
-Factual Display: Raw data and initial trend summaries will remain factual and uninterpreted in the UI.
-
-LLM Interpretation: The LLM is solely responsible for synthesizing, interpreting, and providing actionable recommendations.
-
-Personalization: All insights and recommendations will be highly tailored to the individual user's data.
-
-Privacy & Security: Continued adherence to secure data handling practices.
-
-This roadmap will guide our future development. Let's start with Phase 1: Enhanced Visualization as our immediate next step.
+**Implementation notes:**
+- Reuse the existing write path: `submit_mood_entry(mood, energy, stress, sleep_quality, focus, motivation, ...)` → `db.upsert_subjective_wellbeing` (`smart_health_ollama.py:507`). No new table — `subjective_wellbeing` already stores these 1–10 (CHECK 1..10).
+- Map 3 smileys onto the 1–10 scale (🙁=2, 😐=5, 🙂=8). A 5-face variant can come later; start with 3 for speed.
+- **Invert valence per metric:** for stress, 🙂 must mean *low* stress, so a happy face is always the "good" answer.
+- Once flowing, revives the mood/energy correlations that currently return "no data recorded" for recent windows.
