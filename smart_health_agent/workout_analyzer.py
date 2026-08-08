@@ -366,6 +366,7 @@ def build_narratives(summaries: Dict[str, Dict[str, Any]],
 
         points.append({
             "minute": exc["start_min"],
+            "method": "sd_excursion",
             "metric": metric,
             "quality": exc["quality"],
             "confidence": confidence,
@@ -381,8 +382,14 @@ def build_narratives(summaries: Dict[str, Dict[str, Any]],
 def analyze_workout(activity_id: str, user_id: int = 1,
                     band: Optional[ReferenceBand] = None, k: float = 1.5,
                     window_s: int = 600,
-                    activity_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Full per-workout analysis. Recomputes each call (no cache in the POC)."""
+                    activity_meta: Optional[Dict[str, Any]] = None,
+                    advanced: bool = True) -> Dict[str, Any]:
+    """Full per-workout analysis. Recomputes each call (no cache in the POC).
+
+    When ``advanced`` is set, also runs the Tier-1 analyzers (change-point
+    segmentation, aerobic decoupling, HR recovery, rolling-baseline excursions)
+    from ``workout_advanced`` and merges their tagged narratives.
+    """
     band = band or StatisticalBand(k=k)
     df = load_workout_df(activity_id)
 
@@ -454,6 +461,21 @@ def analyze_workout(activity_id: str, user_id: int = 1,
     result["correlations"] = all_correlations
     result["degraded"] = len(covered) < 2
 
-    # 5. narratives
+    # 5. narratives (SD excursions)
     result["narratives"] = build_narratives(summaries, all_excursions, window_s)
+
+    # 6. Tier-1 advanced analyzers (change-point / decoupling / HRR / rolling)
+    if advanced:
+        try:
+            from workout_advanced import advanced_analyses
+            adv = advanced_analyses(df, covered)
+            result["segments"] = adv["segments"]
+            result["change_points_min"] = adv["change_points_min"]
+            result["decoupling"] = adv["decoupling"]
+            result["hr_recovery"] = adv["hr_recovery"]
+            result["rolling_excursions"] = adv["rolling_excursions"]
+            result["narratives"].extend(adv["narratives"])
+        except Exception as e:  # advanced layer must never break the base result
+            logger.warning("advanced analyses failed for %s: %s", activity_id, e)
+
     return result

@@ -81,10 +81,24 @@ def _print_report(row, k, verbose=False):
             print(f"    {m:<14} mean={s['mean']:.1f} sd={s['std']:.1f} "
                   f"range=[{s['min']:.0f},{s['max']:.0f}] cov={s['coverage']:.0%} n={s['valid_count']}")
 
+    # group narratives by method so each analyzer's contribution is visible
+    methods = ["sd_excursion", "change_point", "decoupling", "hr_recovery", "rolling_band"]
+    labels = {"sd_excursion": "SD excursions", "change_point": "Change-points (phases)",
+              "decoupling": "Aerobic decoupling", "hr_recovery": "HR recovery",
+              "rolling_band": "Rolling-baseline"}
+    by_method = {}
+    for n in res.get("narratives", []):
+        by_method.setdefault(n.get("method", "sd_excursion"), []).append(n)
+
     if not res["narratives"]:
-        print("  (no excursions crossed the band — steady workout)")
-    for n in res["narratives"]:
-        print(f"  • [{n['minute']:g}m {n['confidence']}/{n['quality']}] {n['text']}")
+        print("  (no findings — steady workout)")
+    for meth in methods:
+        items = by_method.get(meth, [])
+        if not items:
+            continue
+        print(f"  -- {labels[meth]} --")
+        for n in sorted(items, key=lambda x: x["minute"]):
+            print(f"     • [{n['minute']:g}m {n['confidence']}/{n['quality']}] {n['text']}")
     return res
 
 
